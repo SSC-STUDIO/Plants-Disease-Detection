@@ -15,8 +15,23 @@ sys.path.append(project_dir)
 
 # 导入配置
 from config import config, paths
-from dataset.data_prep import normalize_path, setup_data
-from libs.inference import predict
+
+
+def normalize_path(path: str) -> str:
+    """轻量路径标准化，避免在参数解析阶段加载重依赖。"""
+    return os.path.normpath(path)
+
+
+def _load_setup_data():
+    from dataset.data_prep import setup_data
+
+    return setup_data
+
+
+def _load_predict():
+    from libs.inference import predict
+
+    return predict
 
 # 确保处理器的级别正确设置
 root_logger = logging.getLogger()
@@ -236,6 +251,8 @@ def prepare_data(args: argparse.Namespace) -> Dict[str, Any]:
     force_cleanup = getattr(args, 'force_cleanup', False)
     
     # 运行数据准备
+    setup_data = _load_setup_data()
+
     result = setup_data(
         extract=extract,
         process=process, 
@@ -766,9 +783,11 @@ def run_inference(args) -> None:
     # 检查输入是文件还是目录
     if os.path.isfile(input_path):
         logger.info(f"Running inference on single image: {input_path}")
+        predict = _load_predict()
         results = predict(model_path, input_path, output_path)
     else:
         logger.info(f"Running inference on directory: {input_path}")
+        predict = _load_predict()
         results = predict(model_path, input_path, output_path, is_dir=True)
     
     # 保存预测结果
