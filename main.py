@@ -369,6 +369,16 @@ def train_pipeline(args: argparse.Namespace) -> None:
                             paths.test_images_dir, 
                             file_pattern="*.png"
                         )
+                        count += data_prep.copy_files_to_folder(
+                            image_dir,
+                            paths.test_images_dir,
+                            file_pattern="*.jpeg"
+                        )
+                        count += data_prep.copy_files_to_folder(
+                            image_dir,
+                            paths.test_images_dir,
+                            file_pattern="*.JPEG"
+                        )
                         copied_count += count
                         logger.info(f"Copied {count} image files from {image_dir} to {paths.test_images_dir}")
                     
@@ -563,13 +573,34 @@ def run_inference(args) -> None:
         logger.info(f"Using default input path: {input_path}")
     else:
         input_path = args.input
+
+    def normalize_for_compare(path: str) -> str:
+        return os.path.normcase(os.path.abspath(normalize_path(path)))
+
+    default_test_paths = {
+        normalize_for_compare(paths.test_images_dir),
+        normalize_for_compare(paths.test_dir),
+    }
+    is_default_test_input = normalize_for_compare(input_path) in default_test_paths
+
+    is_existing_dir = os.path.isdir(input_path)
+    existing_images = []
+    if is_existing_dir:
+        existing_images = [
+            f for f in os.listdir(input_path)
+            if f.lower().endswith(('.jpg', '.jpeg', '.png'))
+        ]
+    input_missing_or_empty = (not os.path.exists(input_path)) or (is_existing_dir and len(existing_images) == 0)
         
     # 获取输入路径，可以是单个图像或目录
-    if not os.path.exists(input_path):
-        logger.error(f"Input path not found: {input_path}")
+    if input_missing_or_empty:
+        if not os.path.exists(input_path):
+            logger.error(f"Input path not found: {input_path}")
+        else:
+            logger.warning(f"Input directory is empty: {input_path}")
         
         # 检查是否是测试目录
-        if input_path == paths.test_images_dir or input_path == paths.test_dir:
+        if is_default_test_input:
             logger.info("Test data preparation needed")
             
             # 直接使用DataPreparation类来处理测试数据
@@ -657,6 +688,16 @@ def run_inference(args) -> None:
                             paths.test_images_dir, 
                             file_pattern="*.png"
                         )
+                        count += data_prep.copy_files_to_folder(
+                            image_dir,
+                            paths.test_images_dir,
+                            file_pattern="*.jpeg"
+                        )
+                        count += data_prep.copy_files_to_folder(
+                            image_dir,
+                            paths.test_images_dir,
+                            file_pattern="*.JPEG"
+                        )
                         copied_count += count
                         logger.info(f"Copied {count} image files from {image_dir} to {paths.test_images_dir}")
                     
@@ -733,6 +774,16 @@ def run_inference(args) -> None:
                                     paths.test_images_dir, 
                                     file_pattern="*.png"
                                 )
+                                count += data_prep.copy_files_to_folder(
+                                    image_dir,
+                                    paths.test_images_dir,
+                                    file_pattern="*.jpeg"
+                                )
+                                count += data_prep.copy_files_to_folder(
+                                    image_dir,
+                                    paths.test_images_dir,
+                                    file_pattern="*.JPEG"
+                                )
                                 copied_count += count
                                 logger.info(f"Copied {count} image files from {image_dir} to {paths.test_images_dir}")
                             
@@ -752,12 +803,20 @@ def run_inference(args) -> None:
                     return
             
             # 再次检查输入路径
-            if not os.path.exists(input_path):
-                logger.error(f"Even after attempting to prepare test data, input path still not found: {input_path}")
+            prepared_images = []
+            if os.path.exists(input_path) and os.path.isdir(input_path):
+                prepared_images = [
+                    f for f in os.listdir(input_path)
+                    if f.lower().endswith(('.jpg', '.jpeg', '.png'))
+                ]
+
+            if (not os.path.exists(input_path)) or (os.path.isdir(input_path) and not prepared_images):
+                logger.error(f"Even after attempting to prepare test data, no valid input images found at: {input_path}")
                 return
             else:
                 logger.info(f"Successfully prepared test data: {input_path}")
         else:
+            logger.error("Input path is missing/empty and is not a default test directory")
             return
     
     # 设置输出文件路径
@@ -908,6 +967,16 @@ def main():
                             image_dir, 
                             paths.test_images_dir, 
                             file_pattern="*.png"
+                        )
+                        count += data_prep.copy_files_to_folder(
+                            image_dir,
+                            paths.test_images_dir,
+                            file_pattern="*.jpeg"
+                        )
+                        count += data_prep.copy_files_to_folder(
+                            image_dir,
+                            paths.test_images_dir,
+                            file_pattern="*.JPEG"
                         )
                         copied_count += count
                         logger.info(f"Copied {count} image files from {image_dir} to {paths.test_images_dir}")

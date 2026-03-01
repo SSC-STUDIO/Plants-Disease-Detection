@@ -196,7 +196,7 @@ class PlantDiseaseDataset(Dataset):
             
         # 基础转换
         base_transforms = [
-            T.Resize((self.img_weight, self.img_height)),
+            T.Resize((self.img_height, self.img_weight)),
             T.ToTensor(),
             T.Normalize(
                 mean=[0.485, 0.456, 0.406],
@@ -228,12 +228,12 @@ class PlantDiseaseDataset(Dataset):
         try:
             if self.test:
                 filename = self.imgs[index]
-                img = Image.open(filename)
+                img = Image.open(filename).convert('RGB')
                 img_tensor = self.transforms(img)
                 return img_tensor, filename
             else:
                 filename, label = self.imgs[index]
-                img = Image.open(filename)
+                img = Image.open(filename).convert('RGB')
                 img_tensor = self.transforms(img)
                 return img_tensor, label
         except Exception as e:
@@ -277,8 +277,9 @@ def get_files(data_path, mode):
     logger.info(f"Loading {mode} dataset from: {actual_root}")
     
     if mode == "test":
+        image_exts = ('.jpg', '.jpeg', '.png', '.JPG', '.JPEG', '.PNG')
         files = [os.path.join(actual_root, img) for img in os.listdir(actual_root) 
-                if img.endswith(('.jpg', '.JPG', '.png', '.PNG'))]
+                if img.endswith(image_exts)]
         return pd.DataFrame({"filename": files})
         
     elif mode in ["train", "val"]: 
@@ -287,7 +288,7 @@ def get_files(data_path, mode):
                         if os.path.isdir(os.path.join(actual_root, x))]
         
         # 获取所有jpg和png图像路径
-        image_patterns = ['/*.jpg', '/*.JPG', '/*.png', '/*.PNG']
+        image_patterns = ['/*.jpg', '/*.jpeg', '/*.JPG', '/*.JPEG', '/*.png', '/*.PNG']
         all_images = []
         for folder in image_folders:
             for pattern in image_patterns:

@@ -2,9 +2,20 @@ import torch
 import torchvision
 import torch.nn.functional as F 
 from torch import nn
-import timm
 import os
 import ssl
+
+try:
+    import timm
+except ImportError:
+    timm = None
+
+
+def _build_torchvision_model(builder, weights_attr, pretrained):
+    weights_enum = getattr(torchvision.models, weights_attr, None)
+    if weights_enum is not None:
+        return builder(weights=weights_enum.DEFAULT if pretrained else None)
+    return builder(pretrained=pretrained)
 
 def get_densenet169(num_classes, pretrained=True):
     """生成DenseNet169模型
@@ -16,8 +27,7 @@ def get_densenet169(num_classes, pretrained=True):
             super(DenseModel, self).__init__()
             self.features = pretrained_model.features
             self.classifier = nn.Sequential(
-                nn.Linear(pretrained_model.classifier.in_features, num_classes),
-                nn.Softmax(dim=1)
+                nn.Linear(pretrained_model.classifier.in_features, num_classes)
             )
             
             self._initialize_weights()
@@ -49,7 +59,11 @@ def get_efficientnet(num_classes, pretrained=True):
     Args:
         pretrained (bool): 是否使用预训练权重，默认为True
     """
-    model = torchvision.models.efficientnet_b4(pretrained=pretrained)
+    model = _build_torchvision_model(
+        torchvision.models.efficientnet_b4,
+        "EfficientNet_B4_Weights",
+        pretrained,
+    )
     
     # 冻结大部分层
     for name, param in model.named_parameters():
@@ -60,8 +74,7 @@ def get_efficientnet(num_classes, pretrained=True):
     in_features = model.classifier[1].in_features
     model.classifier = nn.Sequential(
         nn.Dropout(p=0.4, inplace=True),
-        nn.Linear(in_features, num_classes),
-        nn.Softmax(dim=1)
+        nn.Linear(in_features, num_classes)
     )
     
     return model
@@ -78,19 +91,31 @@ def get_efficientnetv2(num_classes, pretrained=True):
     os.environ['TORCH_HOME'] = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'checkpoints', 'pretrained')
     os.environ['HF_HOME'] = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'checkpoints', 'pretrained')
     
+    if timm is None:
+        print("timm is not installed, falling back to torchvision efficientnet_v2_s")
+        model = _build_torchvision_model(
+            torchvision.models.efficientnet_v2_s,
+            "EfficientNet_V2_S_Weights",
+            pretrained,
+        )
+        in_features = model.classifier[1].in_features
+        model.classifier = nn.Sequential(
+            nn.Dropout(p=0.3, inplace=True),
+            nn.Linear(in_features, num_classes),
+        )
+        return model
+
     try:
-        # 使用本地缓存，禁用SSL验证
         model = timm.create_model(
             'tf_efficientnetv2_s',
             pretrained=pretrained,
             num_classes=0,
             features_only=False,
-            out_indices=None
+            out_indices=None,
         )
         print("Created EfficientNetV2-S model")
     except Exception as e:
-        print(f"Failed to create model: {str(e)}")
-        return None
+        raise RuntimeError(f"Failed to create EfficientNetV2-S model: {str(e)}") from e
     
     # 获取特征维度
     feature_dim = model.num_features
@@ -127,7 +152,11 @@ def get_convnext(num_classes, pretrained=True):
     Args:
         pretrained (bool): 是否使用预训练权重，默认为True
     """
-    model = torchvision.models.convnext_small(pretrained=pretrained)
+    model = _build_torchvision_model(
+        torchvision.models.convnext_small,
+        "ConvNeXt_Small_Weights",
+        pretrained,
+    )
     
     # 冻结早期层
     for name, param in model.named_parameters():
@@ -136,12 +165,7 @@ def get_convnext(num_classes, pretrained=True):
     
     # 替换分类器
     in_features = model.classifier[2].in_features
-    model.classifier = nn.Sequential(
-        nn.LayerNorm2d(in_features),
-        nn.Flatten(1),
-        nn.Linear(in_features, num_classes),
-        nn.Softmax(dim=1)
-    )
+    model.classifier[2] = nn.Linear(in_features, num_classes)
     
     return model
 
@@ -150,6 +174,9 @@ def get_swin_transformer(num_classes, pretrained=True):
     Args:
         pretrained (bool): 是否使用预训练权重，默认为True
     """
+    if timm is None:
+        raise ImportError("timm is required for swin_transformer model")
+
     model = timm.create_model('swin_small_patch4_window7_224', pretrained=pretrained)
     
     # 冻结早期层
@@ -167,8 +194,7 @@ def get_swin_transformer(num_classes, pretrained=True):
     feature_dim = model.head.in_features
     model.head = nn.Sequential(
         nn.LayerNorm(feature_dim),
-        nn.Linear(feature_dim, num_classes),
-        nn.Softmax(dim=1)
+        nn.Linear(feature_dim, num_classes)
     )
     
     return model
@@ -178,6 +204,9 @@ def get_hybrid_model(num_classes, pretrained=True):
     Args:
         pretrained (bool): 是否使用预训练权重，默认为True
     """
+    if timm is None:
+        raise ImportError("timm is required for hybrid_model")
+
     class HybridModel(nn.Module):
         def __init__(self):
             super(HybridModel, self).__init__()
@@ -211,8 +240,7 @@ def get_hybrid_model(num_classes, pretrained=True):
             self.classifier = nn.Sequential(
                 nn.LayerNorm(transformer_dim),
                 nn.Dropout(0.3),
-                nn.Linear(transformer_dim, num_classes),
-                nn.Softmax(dim=1)
+                nn.Linear(transformer_dim, num_classes)
             )
         
         def forward(self, x):
@@ -238,8 +266,8 @@ def get_ensemble_model(num_classes, pretrained=True):
             super(EnsembleModel, self).__init__()
             
             # 加载多个预训练模型
-            self.model1 = get_efficientnetv2(pretrained=pretrained)  # EfficientNetV2
-            self.model2 = get_convnext(pretrained=pretrained)  # ConvNeXt
+            self.model1 = get_efficientnetv2(num_classes=num_classes, pretrained=pretrained)
+            self.model2 = get_convnext(num_classes=num_classes, pretrained=pretrained)
             
             # 确保这些模型的输出层是一致的
             # 集成层 - 使用注意力机制进行加权
@@ -290,4 +318,3 @@ def get_net(model_name, num_classes, pretrained=True):
     else:
         print(f"Model {model_name} not found, using default EfficientNetV2")
         return get_efficientnetv2(num_classes, pretrained=pretrained)
-

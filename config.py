@@ -1,5 +1,5 @@
 from typing import List, Tuple, Optional, Union
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 import os
 
 @dataclass
@@ -56,7 +56,8 @@ class PathConfig:
     def __post_init__(self):
         """确保所有路径都有一致的格式并创建必要的目录"""
         # 规范化路径格式
-        for attr_name in self.__annotations__:
+        for config_field in fields(self):
+            attr_name = config_field.name
             attr_value = getattr(self, attr_name)
             if isinstance(attr_value, str) and attr_name.endswith(('_dir', '_path')):
                 # 确保目录路径以斜杠结尾

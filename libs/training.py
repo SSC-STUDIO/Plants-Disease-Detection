@@ -36,7 +36,7 @@ class Trainer:
         self.create_directories()
         
         # 初始化性能监控
-        self.memory_tracker = MemoryTracker()
+        self.memory_tracker = MemoryTracker(track_cuda=self.device.type == 'cuda')
         self.performance_metrics = PerformanceMetrics()
         
     def _setup_logger(self):
@@ -127,7 +127,7 @@ class Trainer:
     def train_epoch(self, model, train_dataloader, 
                    criterion, optimizer, epoch, 
                    log=None, scaler=None, 
-                   model_ema=None):
+                   model_ema=None, scheduler=None):
         """训练单个轮次
         
         参数:
@@ -243,6 +243,8 @@ class Trainer:
                     
                     scaler.step(optimizer)
                     scaler.update()
+                    if isinstance(scheduler, torch.optim.lr_scheduler.OneCycleLR):
+                        scheduler.step()
                 else:
                     # Forward pass
                     output = model(input)
@@ -262,6 +264,8 @@ class Trainer:
                         torch.nn.utils.clip_grad_norm_(model.parameters(), self.config.gradient_clip_val)
                     
                     optimizer.step()
+                    if isinstance(scheduler, torch.optim.lr_scheduler.OneCycleLR):
+                        scheduler.step()
                 
                 # Update EMA model
                 if model_ema is not None:
@@ -498,15 +502,12 @@ class Trainer:
         for epoch in range(start_epoch, epochs):
             # Train for one epoch
             train_loss, train_acc, _ = self.train_epoch(
-                model, train_loader, criterion, optimizer, epoch, train_log, scaler, model_ema
+                model, train_loader, criterion, optimizer, epoch, train_log, scaler, model_ema, scheduler
             )
             
             # Update learning rate
             if scheduler is not None:
-                if isinstance(scheduler, torch.optim.lr_scheduler.OneCycleLR):
-                    # OneCycleLR doesn't need epoch parameter
-                    scheduler.step()
-                else:
+                if not isinstance(scheduler, torch.optim.lr_scheduler.OneCycleLR):
                     # For other schedulers (CosineLRScheduler, StepLR), pass epoch
                     scheduler.step(epoch)
                 
@@ -646,22 +647,31 @@ class Trainer:
 class MemoryTracker:
     """内存使用监视器"""
     
-    def __init__(self, warning_threshold: float = 0.9):
+    def __init__(self, warning_threshold: float = 0.9, track_cuda: bool = True):
         """初始化内存监视器
         
         参数:
             warning_threshold: 内存使用警告阈值（占总内存的比例）
         """
         self.warning_threshold = warning_threshold
+        self.track_cuda = track_cuda
         self.current_usage = 0
         self.peak_usage = 0
         
     def update(self) -> None:
         """更新内存使用统计"""
-        if torch.cuda.is_available():
-            current = torch.cuda.memory_allocated() / torch.cuda.max_memory_allocated()
-            self.peak_usage = max(self.peak_usage, current)
-            self.current_usage = current
+        if not self.track_cuda or not torch.cuda.is_available():
+            self.current_usage = 0
+            return
+
+        max_allocated = torch.cuda.max_memory_allocated()
+        if max_allocated <= 0:
+            self.current_usage = 0
+            return
+
+        current = torch.cuda.memory_allocated() / max_allocated
+        self.peak_usage = max(self.peak_usage, current)
+        self.current_usage = current
         
     def should_warn(self) -> bool:
         """检查是否应该发出警告"""

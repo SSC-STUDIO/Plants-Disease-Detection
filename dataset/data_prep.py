@@ -12,7 +12,6 @@ import cv2
 from PIL import Image
 from skimage.util import random_noise
 from skimage import exposure
-import albumentations as A
 from typing import List, Optional, Tuple, Union, Dict, Any
 from config import config, paths
 import random
@@ -21,6 +20,11 @@ import traceback
 import re
 import threading
 import torch
+
+try:
+    import albumentations as A
+except ImportError:
+    A = None
 
 # 设置日志
 os.makedirs(os.path.dirname(paths.data_proc_log), exist_ok=True)
@@ -235,32 +239,36 @@ class DataPreparation:
         self.error_images = []
         
         # 初始化增强管道
-        self.aug_pipeline = A.Compose([
-            A.RandomRotate90(p=0.5),
-            A.HorizontalFlip(p=0.5),
-            A.VerticalFlip(p=0.5),
-            A.OneOf([
-                A.GaussNoise(var_limit=(0.01, 0.05)),
-                A.GaussianBlur(blur_limit=3),
-            ], p=0.2),
-            A.OneOf([
-                A.MotionBlur(blur_limit=3, p=0.2),
-                A.MedianBlur(blur_limit=3, p=0.1),
-                A.Blur(blur_limit=3, p=0.1),
-            ], p=0.2),
-            A.OneOf([
-                A.OpticalDistortion(p=0.3),
-                A.GridDistortion(p=0.1),
-                A.ElasticTransform(p=0.3),
-            ], p=0.2),
-            A.OneOf([
-                A.CLAHE(clip_limit=2),
-                A.Sharpen(),
-                A.Emboss(),
-                A.RandomBrightnessContrast(),
-            ], p=0.3),
-            A.HueSaturationValue(p=0.3),
-        ])
+        if A is None:
+            self.aug_pipeline = None
+            logger.warning("albumentations is not installed, advanced augmentation is disabled")
+        else:
+            self.aug_pipeline = A.Compose([
+                A.RandomRotate90(p=0.5),
+                A.HorizontalFlip(p=0.5),
+                A.VerticalFlip(p=0.5),
+                A.OneOf([
+                    A.GaussNoise(var_limit=(0.01, 0.05)),
+                    A.GaussianBlur(blur_limit=3),
+                ], p=0.2),
+                A.OneOf([
+                    A.MotionBlur(blur_limit=3, p=0.2),
+                    A.MedianBlur(blur_limit=3, p=0.1),
+                    A.Blur(blur_limit=3, p=0.1),
+                ], p=0.2),
+                A.OneOf([
+                    A.OpticalDistortion(p=0.3),
+                    A.GridDistortion(p=0.1),
+                    A.ElasticTransform(p=0.3),
+                ], p=0.2),
+                A.OneOf([
+                    A.CLAHE(clip_limit=2),
+                    A.Sharpen(),
+                    A.Emboss(),
+                    A.RandomBrightnessContrast(),
+                ], p=0.3),
+                A.HueSaturationValue(p=0.3),
+            ])
     
     def setup_directories(self) -> None:
         """创建项目所需的所有目录"""
@@ -621,6 +629,18 @@ class DataPreparation:
             "merged_details": {},
             "augmented_image_count": 0
         }
+
+        image_patterns = ("*.jpg", "*.jpeg", "*.png", "*.JPG", "*.JPEG", "*.PNG")
+
+        def count_images(directory: str, recursive: bool = False) -> int:
+            if not directory or not os.path.exists(directory):
+                return 0
+            if recursive:
+                return sum(
+                    len(glob.glob(os.path.join(directory, "**", pattern), recursive=True))
+                    for pattern in image_patterns
+                )
+            return sum(len(glob.glob(os.path.join(directory, pattern))) for pattern in image_patterns)
         
         # 检查是否已提取数据集
         try:
@@ -642,10 +662,10 @@ class DataPreparation:
         # 检查数据处理状态 - 根据配置只检查必要的目录
         try:
             # 检查训练目录是否有图像
-            train_processed = os.path.exists(self.paths.train_dir) and len(glob.glob(os.path.join(self.paths.train_dir, "**/*.jpg"), recursive=True)) > 0
+            train_processed = count_images(self.paths.train_dir, recursive=True) > 0
             
             # 检查测试目录是否有图像
-            test_processed = os.path.exists(self.paths.test_images_dir) and len(glob.glob(os.path.join(self.paths.test_images_dir, "*.jpg"))) > 0
+            test_processed = count_images(self.paths.test_images_dir) > 0
             
             status["data_processed"] = train_processed or test_processed
             status["processed_details"] = {
@@ -662,9 +682,9 @@ class DataPreparation:
                 # 检查增强数据目录是否有图像
                 aug_dir_exists = os.path.exists(self.paths.aug_train_dir)
                 if aug_dir_exists:
-                    aug_images = glob.glob(os.path.join(self.paths.aug_train_dir, "**/*.jpg"), recursive=True)
-                    status["augmentation_completed"] = len(aug_images) > 0
-                    status["augmented_image_count"] = len(aug_images)
+                    aug_count = count_images(self.paths.aug_train_dir, recursive=True)
+                    status["augmentation_completed"] = aug_count > 0
+                    status["augmented_image_count"] = aug_count
                 else:
                     status["augmentation_completed"] = False
                     status["augmented_image_count"] = 0
@@ -682,15 +702,15 @@ class DataPreparation:
                 # 根据具体合并设置检查相应目录
                 merged_train = (self.config.merge_datasets or self.config.merge_train_datasets) and \
                                 os.path.exists(self.paths.merged_train_dir) and \
-                                len(glob.glob(os.path.join(self.paths.merged_train_dir, "**/*.jpg"), recursive=True)) > 0
+                                count_images(self.paths.merged_train_dir, recursive=True) > 0
                 
                 merged_test = (self.config.merge_datasets or self.config.merge_test_datasets) and \
                                 os.path.exists(self.paths.merged_test_dir) and \
-                                len(glob.glob(os.path.join(self.paths.merged_test_dir, "*.jpg"))) > 0
+                                count_images(self.paths.merged_test_dir) > 0
                 
                 merged_val = (self.config.merge_datasets or self.config.merge_val_datasets) and \
                                 os.path.exists(self.paths.merged_val_dir) and \
-                                len(glob.glob(os.path.join(self.paths.merged_val_dir, "*.jpg"))) > 0
+                                count_images(self.paths.merged_val_dir) > 0
                 
                 # 只检查需要合并的数据集
                 status["merged_datasets"] = (
@@ -717,7 +737,7 @@ class DataPreparation:
         
         # 基本目录 - 总是需要检查
         data_dirs["train"] = self.paths.train_dir
-        data_dirs["test"] = self.paths.test_dir
+        data_dirs["test"] = self.paths.test_images_dir
         
         # 视配置添加其他目录
         if self.config.use_data_aug:
@@ -739,7 +759,7 @@ class DataPreparation:
                     if os.path.isdir(path):
                         if name == "train":
                             # 递归统计训练目录中所有图像
-                            img_count = len(glob.glob(os.path.join(path, "**/*.jpg"), recursive=True))
+                            img_count = count_images(path, recursive=True)
                             # 检查类别数量
                             class_count = len([d for d in os.listdir(path) if os.path.isdir(os.path.join(path, d))])
                             status["datasets"][name] = {
@@ -750,7 +770,7 @@ class DataPreparation:
                             }
                         else:
                             # 非训练目录，直接统计文件数
-                            file_count = len([f for f in glob.glob(os.path.join(path, "*.jpg"))])
+                            file_count = count_images(path)
                             status["datasets"][name] = {
                                 "path": path,
                                 "exists": True,
@@ -825,7 +845,7 @@ class DataPreparation:
                 testing_imgs += status["datasets"]["merged_test"]["file_count"]
         
         status["testing"] = {
-            "directory": self.paths.test_dir,
+            "directory": self.paths.test_images_dir,
             "total_images": testing_imgs
         }
         
@@ -1006,6 +1026,8 @@ class DataPreparation:
         if img is None:
             logger.warning("Input image is None")
             return None
+        if self.aug_pipeline is None:
+            return img
         try:
             # 检查图像尺寸，如果太大则调整大小
             h, w = img.shape[:2]
@@ -1474,7 +1496,7 @@ class DataPreparation:
         
         # 检查处理后的数据是否已经存在
         train_processed = self.is_valid_dataset_directory(self.paths.train_dir, 'train')
-        val_processed = os.path.exists(self.paths.val_dir) and len(glob.glob(os.path.join(self.paths.val_dir, "images", "*.jpg"))) > 0
+        val_processed = self.is_valid_dataset_directory(self.paths.val_dir, 'val')
         
         if train_processed and val_processed and not self.config.force_data_processing:
             logger.info("Processed data already exists. Set force_data_processing=True to reprocess.")
@@ -1677,6 +1699,18 @@ class DataPreparation:
                              glob.glob(os.path.join(images_dir, "*.jpeg")) + \
                              glob.glob(os.path.join(images_dir, "*.png"))
                     return len(images) > 0
+
+                # 或者验证目录也可能和训练目录一样，按类别子目录组织
+                subdirs = [d for d in os.listdir(directory_path) if os.path.isdir(os.path.join(directory_path, d))]
+                if subdirs:
+                    for subdir in subdirs:
+                        subdir_path = os.path.join(directory_path, subdir)
+                        images = glob.glob(os.path.join(subdir_path, "*.jpg")) + \
+                                 glob.glob(os.path.join(subdir_path, "*.jpeg")) + \
+                                 glob.glob(os.path.join(subdir_path, "*.png"))
+                        if images:
+                            return True
+                    return False
                     
                 # 或者验证目录也可能直接包含图像
                 images = glob.glob(os.path.join(directory_path, "*.jpg")) + \
@@ -1717,6 +1751,8 @@ class DataPreparation:
             # 查找训练和验证数据集文件
             train_dataset_found = False
             val_dataset_found = False
+            train_extract_dir = os.path.join(self.paths.temp_dataset_dir, "AgriculturalDisease_trainingset")
+            val_extract_dir = os.path.join(self.paths.temp_dataset_dir, "AgriculturalDisease_validationset")
             
             # 在数据目录下查找训练和验证数据集文件
             data_dir = normalize_path(self.paths.data_dir)
@@ -1740,7 +1776,6 @@ class DataPreparation:
             # 提取训练数据集
             if train_files:
                 logger.info(f"找到训练数据集文件: {train_files}")
-                train_extract_dir = os.path.join(self.paths.temp_dataset_dir, "AgriculturalDisease_trainingset")
                 os.makedirs(train_extract_dir, exist_ok=True)
                 
                 for train_file in train_files:
@@ -1756,7 +1791,6 @@ class DataPreparation:
             # 提取验证数据集
             if val_files:
                 logger.info(f"找到验证数据集文件: {val_files}")
-                val_extract_dir = os.path.join(self.paths.temp_dataset_dir, "AgriculturalDisease_validationset")
                 os.makedirs(val_extract_dir, exist_ok=True)
                 
                 for val_file in val_files:

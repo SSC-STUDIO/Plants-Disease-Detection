@@ -1,4 +1,5 @@
 import shutil
+import copy
 import torch
 import sys
 import os
@@ -10,14 +11,22 @@ from typing import Dict, List, Tuple, Union, Optional, Any
 from config import config, paths
 from torch import nn
 import torch.nn.functional as F
-from timm.scheduler.cosine_lr import CosineLRScheduler
 from torch.optim.lr_scheduler import OneCycleLR
 import glob
 import warnings
 from torch.optim import *
 from tqdm import tqdm
-from timm.utils import ModelEmaV2 as TimmModelEmaV2
 import concurrent.futures
+
+try:
+    from timm.scheduler.cosine_lr import CosineLRScheduler as TimmCosineLRScheduler
+except ImportError:
+    TimmCosineLRScheduler = None
+
+try:
+    from timm.utils import ModelEmaV2 as TimmModelEmaV2
+except ImportError:
+    TimmModelEmaV2 = None
 
 # 设置日志
 logging.basicConfig(
@@ -56,23 +65,10 @@ class CustomModelEmaV2:
 
     def _create_deep_copy(self, model, device=None):
         """Create a deep copy of the model on the specified device"""
-        model_copy = type(model)() if hasattr(model, '__new__') else model.__new__(type(model))
-        
-        # Initialize the copy with the same attributes
-        model_copy.__dict__ = {k: v for k, v in model.__dict__.items() if k != '_parameters' and k != '_buffers' and k != '_modules'}
-        model_copy._parameters = model._parameters.copy()
-        model_copy._buffers = model._buffers.copy()
-        model_copy._modules = type(model._modules)()
-        
-        # Copy modules recursively
-        for name, module in model._modules.items():
-            if module is not None:
-                model_copy._modules[name] = self._create_deep_copy(module, device)
-        
-        # Move to device if specified
+        model_copy = copy.deepcopy(model)
         if device is not None:
             model_copy.to(device)
-            
+
         return model_copy
 
     def update(self, model):
@@ -112,14 +108,14 @@ class CustomModelEmaV2:
 
 # Alias ModelEmaV2 to either timm's version or our custom version
 try:
-    # Test if timm's ModelEmaV2, e.g., by creating a minimal model and EMA
+    if TimmModelEmaV2 is None:
+        raise ImportError("timm is not installed")
+
     test_model = torch.nn.Sequential(torch.nn.Linear(10, 10))
     test_ema = TimmModelEmaV2(test_model, decay=0.999)
-    # Try to initialize it to make sure it works
     for p_ema, p_model in zip(test_ema.module.parameters(), test_model.parameters()):
         p_ema.data.copy_(p_model.data)
-    
-    # If we get here, timm's ModelEmaV2 seems to work
+
     ModelEmaV2 = TimmModelEmaV2
     logger.info("Using timm's ModelEmaV2 implementation")
 except Exception:
@@ -260,15 +256,23 @@ def get_scheduler(optimizer: torch.optim.Optimizer, num_epochs: int,
             gamma=0.1
         )
     elif config.scheduler == 'cosine':
-        scheduler = CosineLRScheduler(
-            optimizer,
-            t_initial=num_epochs,
-            lr_min=1e-6,
-            warmup_lr_init=config.lr * config.warmup_factor,
-            warmup_t=config.warmup_epochs,
-            cycle_limit=1,
-            t_in_epochs=True
-        )
+        if TimmCosineLRScheduler is not None:
+            scheduler = TimmCosineLRScheduler(
+                optimizer,
+                t_initial=num_epochs,
+                lr_min=1e-6,
+                warmup_lr_init=config.lr * config.warmup_factor,
+                warmup_t=config.warmup_epochs,
+                cycle_limit=1,
+                t_in_epochs=True,
+            )
+        else:
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                optimizer,
+                T_max=max(1, num_epochs),
+                eta_min=1e-6,
+            )
+            logger.warning("timm is not installed, falling back to CosineAnnealingLR")
     elif config.scheduler == 'onecycle':
         if steps_per_epoch is None:
             raise ValueError("steps_per_epoch must be provided for OneCycleLR")
@@ -383,7 +387,8 @@ def accuracy(output: torch.Tensor, target: torch.Tensor, topk: Tuple[int, ...] =
     返回:
         top-k准确率列表
     """
-    maxk = max(topk)
+    max_available_k = output.size(1)
+    maxk = min(max(topk), max_available_k)
     batch_size = target.size(0)
 
     _, pred = output.topk(maxk, 1, True, True)
@@ -392,7 +397,8 @@ def accuracy(output: torch.Tensor, target: torch.Tensor, topk: Tuple[int, ...] =
 
     res = []
     for k in topk:
-        correct_k = correct[:k].reshape(-1).float().sum(0, keepdim=True)
+        effective_k = min(k, max_available_k)
+        correct_k = correct[:effective_k].reshape(-1).float().sum(0, keepdim=True)
         res.append(correct_k.mul_(100.0 / batch_size))
     return res
 
@@ -410,11 +416,16 @@ class Logger:
             file_path: 日志文件路径
             mode: 打开模式
         """
-        # 确保路径在logs目录下
+        log_dir = Path(paths.log_dir)
+
+        # 确保路径在log目录下
         if isinstance(file_path, str) and not file_path.startswith(paths.log_dir):
             file_path = os.path.join(paths.log_dir, os.path.basename(file_path))
-        elif isinstance(file_path, Path) and 'logs' not in file_path.parts:
-            file_path = Path(paths.log_dir) / file_path.name
+        elif isinstance(file_path, Path):
+            try:
+                file_path.relative_to(log_dir)
+            except ValueError:
+                file_path = log_dir / file_path.name
         
         # 确保logs目录存在
         os.makedirs(paths.log_dir, exist_ok=True)
@@ -629,25 +640,13 @@ def create_model_ema(model: nn.Module):
     """
     if not config.use_ema:
         return None
-    
-    # 静态变量，记录是否已经初始化过
-    if not hasattr(create_model_ema, '_initialized'):
-        create_model_ema._initialized = False
-        
-    # 如果已经初始化过EMA模型，直接返回
-    if create_model_ema._initialized:
-        logger.info("EMA model already initialized, skipping")
-        return None
-        
+
     try:
         # Check if the ModelEmaV2 class from timm is available and working
         model_ema = ModelEmaV2(model, decay=config.ema_decay)
         
         # Test that the model was created correctly
         logger.info(f"Created EMA model with decay rate {config.ema_decay}")
-        
-        # 标记已初始化
-        create_model_ema._initialized = True
         
         return model_ema
     except Exception as e:
@@ -968,4 +967,3 @@ def process_images_multithread(images, process_function, max_workers=None, batch
                     pbar.update(len(batch))
     
     return results 
-

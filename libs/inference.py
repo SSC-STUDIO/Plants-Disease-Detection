@@ -176,16 +176,13 @@ class InferenceManager:
                 
                 # Process predictions
                 for i, (probs, path) in enumerate(zip(probabilities, batch_paths)):
-                    pred_label = int(torch.argmax(probs).item())
-                    
-                    # Adjust label index for classes 44 and 45 which are removed
-                    if pred_label > 43:
-                        pred_label = pred_label + 2
+                    pred_label = self._remap_label_index(int(torch.argmax(probs).item()))
                         
                     # Create result entry
                     results.append({
                         "image_id": os.path.basename(path),
                         "disease_class": pred_label,
+                        "confidence": float(torch.max(probs).item()),
                         "probabilities": probs.cpu().numpy().tolist()
                     })
         
@@ -200,7 +197,9 @@ class InferenceManager:
             output_file: 输出文件路径
         """
         # Create output directory if it doesn't exist
-        os.makedirs(os.path.dirname(output_file), exist_ok=True)
+        output_dir = os.path.dirname(output_file)
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
         
         # Prepare submission format
         submit_format = []
@@ -218,6 +217,12 @@ class InferenceManager:
         except Exception as e:
             self.logger.error(f"Error saving predictions: {str(e)}")
             raise
+
+    @staticmethod
+    def _remap_label_index(pred_label: int) -> int:
+        if pred_label > 43:
+            return pred_label + 2
+        return pred_label
 
 class InferenceDataset(Dataset):
     """推理数据集类"""
@@ -306,8 +311,9 @@ def predict(model_path: str, input_path: str, output_file: str = paths.predictio
             pred = inference.predict_single(input_path)
             predictions = [{
                 'image_id': os.path.basename(input_path),
-                'disease_class': int(np.argmax(pred)),
-                'confidence': float(np.max(pred))
+                'disease_class': inference._remap_label_index(int(np.argmax(pred))),
+                'confidence': float(np.max(pred)),
+                'probabilities': pred.tolist(),
             }]
         
         # 保存预测结果
