@@ -69,11 +69,11 @@ python -m pip install -r requirements.txt
 python -m pip install -r requirements-extras.txt
 ```
 
-说明：当前 PyTorch 在 Windows 上对 Python 3.14 的支持尚不完善，推荐使用 Python 3.12 或 3.13。
+说明：当前推荐使用最新稳定版 Python 3.14.x（截至 2026-02-03 为 3.14.3）。若在 Windows 上遇到 PyTorch 兼容性问题，可临时回退到 3.13。
 
 快速创建虚拟环境（无 uv）：
 ```bash
-py -3.12 -m venv .venv
+py -3.14 -m venv .venv
 .\.venv\Scripts\activate
 python -m pip install -r requirements.txt
 ```
