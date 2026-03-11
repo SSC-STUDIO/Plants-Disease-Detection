@@ -38,6 +38,7 @@ class PathConfig:
     # 输出目录
     submit_dir: str = "./submit/"
     log_dir: str = "./log/"
+    report_dir: str = "./reports/"
     
     # 日志文件
     training_log: str = "./log/training.log"
@@ -73,6 +74,7 @@ class PathConfig:
         essential_dirs = [
             self.data_dir,
             self.log_dir,
+            self.report_dir,
             self.train_dir,
             self.test_dir,
             self.test_images_dir,
@@ -119,11 +121,12 @@ class DefaultConfigs:
     logs: str = field(default="")  # 日志保存路径
     
     # 数据集路径配置 Dataset Path Configuration
-    dataset_path: str = None  # 外部数据集路径，设置为None表示使用默认的data目录
+    dataset_path: Optional[str] = None  # 外部数据集路径，设置为None表示使用默认的data目录
     training_dataset_file: str = "ai_challenger_pdr2018_trainingset_20181023.zip"  # 训练集数据文件名
     validation_dataset_file: str = "ai_challenger_pdr2018_validationset_20181023.zip"  # 验证集数据文件名
     use_custom_dataset_path: bool = False  # 是否使用自定义数据集路径
     supported_dataset_formats: Tuple[str, ...] = ('.zip', '.rar', '.tar', '.gz', '.tgz')  # 支持的数据集格式
+    image_extensions: Tuple[str, ...] = ('.jpg', '.jpeg', '.png', '.bmp', '.webp')  # 允许的图像扩展名
     
     # 数据集合并配置 Dataset Merging Configuration
     merge_datasets: bool = False  # 是否合并多个数据集，当设置时会影响所有三个数据集的合并设置
@@ -138,7 +141,6 @@ class DefaultConfigs:
     force_data_processing: bool = False  # 是否强制重新处理数据（即使已存在处理后的数据）
     force_augmentation: bool = False  # 是否强制重新生成数据增强（即使已存在增强数据）
     force_merge: bool = False  # 是否强制重新合并数据集（即使合并的数据集已存在）
-    min_files_threshold: int = 1000  # 数据集被认为有效的最小文件数阈值
 
     # 测试集处理配置 Test Dataset Configuration
     test_name_pattern: str = "ai_challenger_pdr2018_test*.zip"  # 测试集ZIP文件的匹配模式
@@ -152,6 +154,8 @@ class DefaultConfigs:
     # 设备配置 Device Configuration
     device: str = 'auto'  # 训练设备选择: "auto", "cuda", "cpu"
     gpus: str = '0'  # GPU设备ID: "0" 或 "0, 1"
+    cuda_launch_blocking: bool = True  # 是否启用 CUDA_LAUNCH_BLOCKING
+    cuda_alloc_conf: Optional[str] = "expandable_segments:True"  # PYTORCH_CUDA_ALLOC_CONF 配置
 
     # 训练参数 Training Parameters
     epoch: int = 40  # 训练轮数
@@ -218,6 +222,8 @@ class DefaultConfigs:
     sampling_threshold: int = 1000000  # 触发采样的数据集大小阈值
     sample_size: int = 50000  # 采样后的数据集大小
     min_files_threshold: int = 1000  # 最小文件数阈值
+    enable_image_validation: bool = True  # 是否在加载数据集时进行图像验证
+    image_validation_workers: int = 4  # 图像验证的最大线程数
 
     # 高级功能 Advanced Features
     progressive_resizing: bool = True  # 是否使用渐进式缩放
@@ -237,6 +243,18 @@ class DefaultConfigs:
         self.logs = self.paths.log_dir
         self.aug_source_path = self.paths.train_dir
         self.aug_target_path = self.paths.aug_train_dir
+
+        # 规范化图像扩展名
+        normalized_exts: List[str] = []
+        for ext in self.image_extensions:
+            if not ext:
+                continue
+            ext = ext.lower()
+            if not ext.startswith("."):
+                ext = f".{ext}"
+            if ext not in normalized_exts:
+                normalized_exts.append(ext)
+        self.image_extensions = tuple(normalized_exts)
         
         # 验证设备设置
         if self.device not in ['auto', 'cuda', 'cpu']:

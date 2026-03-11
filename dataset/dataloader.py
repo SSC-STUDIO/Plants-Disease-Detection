@@ -8,11 +8,10 @@ from itertools import chain
 from glob import glob
 from tqdm import tqdm
 from torch.utils.data import Dataset
-from torchvision import transforms as T 
 from config import config, paths
 from PIL import Image 
 from concurrent.futures import ThreadPoolExecutor
-from utils.utils import handle_datasets
+from utils.utils import handle_datasets, build_transforms, get_image_glob_patterns, get_image_extensions
 import concurrent.futures
 
 # 设置日志记录器
@@ -48,7 +47,22 @@ torch.cuda.manual_seed_all(config.seed)
 
 class PlantDiseaseDataset(Dataset):
     """植物病害图像数据集类"""
-    def __init__(self, label_list, sampling_threshold, sample_size=config.sample_size, seed=config.seed, img_weight=config.img_weight, img_height=config.img_height, use_data_aug=config.use_data_aug, transforms=None, train=True, test=False, enable_sampling=config.enable_sampling):
+    def __init__(
+        self,
+        label_list,
+        sampling_threshold,
+        sample_size=config.sample_size,
+        seed=config.seed,
+        img_weight=config.img_weight,
+        img_height=config.img_height,
+        use_data_aug=config.use_data_aug,
+        transforms=None,
+        train=True,
+        test=False,
+        enable_sampling=config.enable_sampling,
+        validate_images=None,
+        validation_workers=None,
+    ):
         """初始化数据集
         
         参数:
@@ -67,6 +81,8 @@ class PlantDiseaseDataset(Dataset):
         self.img_height = img_height
         self.use_data_aug = use_data_aug
         self.transforms = self._get_transforms(transforms, train, test)
+        self.validate_images = config.enable_image_validation if validate_images is None else validate_images
+        self.validation_workers = validation_workers if validation_workers is not None else config.image_validation_workers
         self.imgs = self._load_images(label_list)
         
     def _load_images(self, label_list):
@@ -89,7 +105,15 @@ class PlantDiseaseDataset(Dataset):
             print(f"Warning: The dataset is very large ({len(imgs)} images), it may cause memory problems")
             print("Hint: Consider using smaller batch size or reducing the dataset size.")
 
-        
+        if not self.validate_images:
+            logger.info("Image validation is disabled; skipping integrity checks")
+            if self.enable_sampling and len(imgs) > self.sampling_threshold:
+                print(f"\nThe dataset is very large ({len(imgs)} images), Conduct sampling to reduce memory usage")
+                random.seed(self.seed)
+                imgs = random.sample(imgs, self.sample_size)
+                print(f"The size of the sampled dataset: {len(imgs)} images")
+            return imgs
+
         valid_imgs = []
         invalid_imgs = []
         
@@ -133,7 +157,8 @@ class PlantDiseaseDataset(Dataset):
         
         # 更高效的批处理配置
         batch_size = 100  # 更大的批次以减少线程创建开销
-        max_workers = min(4, os.cpu_count())  # 限制线程数以减少内存压力
+        cpu_count = os.cpu_count() or 1
+        max_workers = min(max(1, int(self.validation_workers)), cpu_count)
         
         # 将图像分成批次
         batches = []
@@ -194,27 +219,13 @@ class PlantDiseaseDataset(Dataset):
         if transforms is not None:
             return transforms
             
-        # 基础转换
-        base_transforms = [
-            T.Resize((self.img_height, self.img_weight)),
-            T.ToTensor(),
-            T.Normalize(
-                mean=[0.485, 0.456, 0.406],
-                std=[0.229, 0.224, 0.225]
-            )
-        ]
-        
-        # 训练模式额外的数据增强，同时检查是否全局启用数据增强
-        if not test and train and self.use_data_aug:
-            train_transforms = [
-                T.RandomRotation(30),
-                T.RandomHorizontalFlip(),
-                T.RandomVerticalFlip(),
-                T.RandomAffine(45)
-            ]
-            base_transforms[1:1] = train_transforms  # 在ToTensor之前插入训练时的转换
-            
-        return T.Compose(base_transforms)
+        return build_transforms(
+            train=train,
+            test=test,
+            use_data_aug=self.use_data_aug,
+            img_height=self.img_height,
+            img_weight=self.img_weight,
+        )
 
     def __getitem__(self, index):
         """获取单个数据样本
@@ -277,9 +288,13 @@ def get_files(data_path, mode):
     logger.info(f"Loading {mode} dataset from: {actual_root}")
     
     if mode == "test":
-        image_exts = ('.jpg', '.jpeg', '.png', '.JPG', '.JPEG', '.PNG')
-        files = [os.path.join(actual_root, img) for img in os.listdir(actual_root) 
-                if img.endswith(image_exts)]
+        image_exts = get_image_extensions()
+        files = [
+            os.path.join(actual_root, img)
+            for img in os.listdir(actual_root)
+            if img.lower().endswith(image_exts)
+        ]
+        files.sort()
         return pd.DataFrame({"filename": files})
         
     elif mode in ["train", "val"]: 
@@ -288,11 +303,12 @@ def get_files(data_path, mode):
                         if os.path.isdir(os.path.join(actual_root, x))]
         
         # 获取所有jpg和png图像路径
-        image_patterns = ['/*.jpg', '/*.jpeg', '/*.JPG', '/*.JPEG', '/*.png', '/*.PNG']
+        image_patterns = [f"/{pattern}" for pattern in get_image_glob_patterns()]
         all_images = []
         for folder in image_folders:
             for pattern in image_patterns:
                 all_images.extend(glob(folder + pattern))
+        all_images.sort()
                 
         logger.info(f"Loading {mode} dataset ({len(all_images)} images)")
         for file in tqdm(all_images):

@@ -8,26 +8,33 @@ import logging
 from PIL import Image
 from typing import List, Dict, Any, Optional, Tuple, Union
 from torch.utils.data import Dataset, DataLoader
-from torchvision import transforms
 from tqdm import tqdm
-from utils.utils import MyEncoder
+from utils.utils import MyEncoder, build_transforms, get_image_extensions, is_image_file
 from config import config, paths
 from models.model import get_net
 
 class InferenceManager:
     """植物病害检测推理管理器类"""
     
-    def __init__(self, model_path: Optional[str] = None, device: Optional[str] = None, logger=None):
+    def __init__(
+        self,
+        model_path: Optional[str] = None,
+        device: Optional[str] = None,
+        model_name: Optional[str] = None,
+        logger=None
+    ):
         """初始化推理管理器
         
         参数:
             model_path: 模型权重路径
             device: 使用的设备('cuda', 'cpu'或None表示自动检测)
+            model_name: 模型名称（覆盖默认配置）
             logger: 可选的日志记录器实例
         """
         self.model_path = model_path
         self.device = self._get_device(device)
         self.model = None
+        self.model_name = model_name
         self.logger = logger or self._setup_logger()
         
     def _setup_logger(self):
@@ -62,20 +69,22 @@ class InferenceManager:
             # 自动模式
             return torch.device("cuda" if torch.cuda.is_available() else "cpu")
             
-    def load_model(self, model_path: Optional[str] = None) -> None:
+    def load_model(self, model_path: Optional[str] = None, model_name: Optional[str] = None) -> None:
         """从检查点加载模型
         
         参数:
             model_path: 模型权重路径(如果为None则使用self.model_path)
+            model_name: 模型名称(如果为None则使用self.model_name或config.model_name)
         """
         model_path = model_path or self.model_path
         if model_path is None:
             raise ValueError("No model path provided")
+        model_name = model_name or self.model_name or config.model_name
             
         self.logger.info(f"Loading model from {model_path}")
         
         # 初始化模型架构
-        model = get_net(model_name=config.model_name, num_classes=config.num_classes, pretrained=config.pretrained)
+        model = get_net(model_name=model_name, num_classes=config.num_classes, pretrained=config.pretrained)
         
         # 加载权重
         try:
@@ -109,11 +118,7 @@ class InferenceManager:
             raise RuntimeError("Model not loaded. Call load_model() first")
             
         # 准备图像变换
-        transform = transforms.Compose([
-            transforms.Resize((config.img_height, config.img_weight)),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-        ])
+        transform = build_transforms(train=False, test=True)
         
         # 加载并变换图像
         try:
@@ -130,13 +135,26 @@ class InferenceManager:
             
         return probabilities.cpu().numpy()[0]
     
-    def predict_batch(self, image_folder: str, batch_size: int = 16, num_workers: int = 4) -> List[Dict[str, Any]]:
+    def predict_batch(
+        self,
+        image_folder: str,
+        batch_size: int = 16,
+        num_workers: int = 4,
+        topk: int = 3,
+        return_probabilities: bool = False,
+        return_topk: bool = True,
+        confidence_threshold: Optional[float] = None,
+    ) -> List[Dict[str, Any]]:
         """对文件夹中的所有图像进行预测
         
         参数:
             image_folder: 包含图像的文件夹路径
             batch_size: 推理的批次大小
             num_workers: 数据加载的工作线程数
+            topk: 输出Top-K预测结果
+            return_probabilities: 是否返回完整概率向量
+            return_topk: 是否返回Top-K列表
+            confidence_threshold: 低于阈值则标记为low_confidence
             
         返回:
             包含预测结果的字典列表
@@ -145,8 +163,13 @@ class InferenceManager:
             raise RuntimeError("Model not loaded. Call load_model() first")
             
         # Get image files
-        image_files = [os.path.join(image_folder, f) for f in os.listdir(image_folder) 
-                      if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
+        candidates = [os.path.join(image_folder, f) for f in os.listdir(image_folder)]
+        image_extensions = get_image_extensions()
+        image_files = [
+            path for path in candidates
+            if os.path.isfile(path) and is_image_file(path, image_extensions)
+        ]
+        image_files.sort()
         
         if not image_files:
             self.logger.warning(f"No images found in {image_folder}")
@@ -173,46 +196,78 @@ class InferenceManager:
                 
                 # Apply softmax to get probabilities
                 probabilities = torch.nn.Softmax(dim=1)(outputs)
+                safe_topk = max(1, min(topk, probabilities.size(1)))
+                topk_scores, topk_indices = torch.topk(probabilities, k=safe_topk, dim=1)
                 
                 # Process predictions
                 for i, (probs, path) in enumerate(zip(probabilities, batch_paths)):
-                    pred_label = self._remap_label_index(int(torch.argmax(probs).item()))
-                        
+                    pred_index = int(torch.argmax(probs).item())
+                    pred_label = self._remap_label_index(pred_index)
+                    confidence = float(torch.max(probs).item())
+
                     # Create result entry
-                    results.append({
+                    result: Dict[str, Any] = {
                         "image_id": os.path.basename(path),
                         "disease_class": pred_label,
-                        "confidence": float(torch.max(probs).item()),
-                        "probabilities": probs.cpu().numpy().tolist()
-                    })
+                        "confidence": confidence,
+                    }
+
+                    if return_topk:
+                        topk_items = []
+                        for score, idx in zip(topk_scores[i], topk_indices[i]):
+                            topk_items.append({
+                                "class": self._remap_label_index(int(idx.item())),
+                                "score": float(score.item()),
+                            })
+                        result["topk"] = topk_items
+
+                    if return_probabilities:
+                        result["probabilities"] = probs.cpu().numpy().tolist()
+
+                    if confidence_threshold is not None:
+                        result["low_confidence"] = confidence < confidence_threshold
+
+                    results.append(result)
         
         self.logger.info(f"Processed {len(results)} images")
         return results
     
-    def save_predictions(self, predictions: List[Dict], output_file: str = paths.prediction_file) -> None:
+    def save_predictions(
+        self,
+        predictions: List[Dict],
+        output_file: str = paths.prediction_file,
+        output_format: str = "submit",
+    ) -> None:
         """将预测结果保存到JSON文件
         
         参数:
             predictions: 预测字典列表
             output_file: 输出文件路径
+            output_format: submit(提交格式)或full(完整输出)
         """
         # Create output directory if it doesn't exist
         output_dir = os.path.dirname(output_file)
         if output_dir:
             os.makedirs(output_dir, exist_ok=True)
         
-        # Prepare submission format
-        submit_format = []
-        for pred in predictions:
-            submit_format.append({
-                "image_id": pred["image_id"],
-                "disease_class": pred["disease_class"]
-            })
+        # Prepare output format
+        if output_format == "submit":
+            output_payload = [
+                {
+                    "image_id": pred["image_id"],
+                    "disease_class": pred["disease_class"],
+                }
+                for pred in predictions
+            ]
+        elif output_format == "full":
+            output_payload = predictions
+        else:
+            raise ValueError(f"Unsupported output format: {output_format}")
             
         # Save to file
         try:
             with open(output_file, "w", encoding="utf-8") as f:
-                json.dump(submit_format, f, ensure_ascii=False, cls=MyEncoder)
+                json.dump(output_payload, f, ensure_ascii=False, cls=MyEncoder)
             self.logger.info(f"Predictions saved to {output_file}")
         except Exception as e:
             self.logger.error(f"Error saving predictions: {str(e)}")
@@ -234,11 +289,7 @@ class InferenceDataset(Dataset):
             file_paths: 图像文件路径列表
         """
         self.file_paths = file_paths
-        self.transforms = transforms.Compose([
-            transforms.Resize((config.img_height, config.img_weight)),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-        ])
+        self.transforms = build_transforms(train=False, test=True)
         
     def __len__(self):
         """返回数据集大小"""
@@ -263,7 +314,20 @@ class InferenceDataset(Dataset):
             # Return empty image
             return torch.zeros((3, config.img_height, config.img_weight)), img_path
 
-def predict(model_path: str, input_path: str, output_file: str = paths.prediction_file, is_dir: bool = False) -> List[Dict]:
+def predict(
+    model_path: str,
+    input_path: str,
+    output_file: str = paths.prediction_file,
+    is_dir: bool = False,
+    device: Optional[str] = None,
+    model_name: Optional[str] = None,
+    batch_size: Optional[int] = None,
+    num_workers: Optional[int] = None,
+    topk: int = 3,
+    save_probs: bool = False,
+    output_format: str = "submit",
+    confidence_threshold: Optional[float] = None,
+) -> List[Dict]:
     """预测函数，支持单张图片或图片目录
     
     参数:
@@ -271,6 +335,13 @@ def predict(model_path: str, input_path: str, output_file: str = paths.predictio
         input_path: 输入图片或图片目录路径
         output_file: 输出文件路径
         is_dir: 输入是否为目录
+        device: 推理设备
+        batch_size: 批次大小（目录推理）
+        num_workers: 数据加载线程数
+        topk: 输出Top-K预测
+        save_probs: 是否保存完整概率向量
+        output_format: 输出格式 submit/full
+        confidence_threshold: 低于阈值则标记low_confidence
         
     返回:
         预测结果字典列表
@@ -278,11 +349,11 @@ def predict(model_path: str, input_path: str, output_file: str = paths.predictio
     logger = logging.getLogger('Inference')
     
     # 初始化推理管理器
-    inference = InferenceManager(model_path)
+    inference = InferenceManager(model_path, device=device, model_name=model_name)
     
     try:
         # 加载模型
-        inference.load_model()
+        inference.load_model(model_name=model_name)
         
         # 进行预测
         if is_dir:
@@ -292,14 +363,26 @@ def predict(model_path: str, input_path: str, output_file: str = paths.predictio
                 return []
                 
             # 检查目录是否为空
-            image_files = [f for f in os.listdir(input_path) if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
+            image_extensions = get_image_extensions()
+            image_files = [
+                f for f in os.listdir(input_path)
+                if is_image_file(f, image_extensions)
+            ]
             if not image_files:
                 logger.error(f"No image files found in directory: {input_path}")
                 return []
                 
             # 目录预测
             logger.info(f"Predicting on {len(image_files)} images in {input_path}")
-            predictions = inference.predict_batch(input_path)
+            predictions = inference.predict_batch(
+                input_path,
+                batch_size=batch_size or config.test_batch_size,
+                num_workers=num_workers or config.num_workers,
+                topk=topk,
+                return_probabilities=save_probs,
+                return_topk=True,
+                confidence_threshold=confidence_threshold,
+            )
         else:
             # 单张图片预测
             if not os.path.exists(input_path) or not os.path.isfile(input_path):
@@ -309,16 +392,31 @@ def predict(model_path: str, input_path: str, output_file: str = paths.predictio
             # 对单个图像进行预测并将结果转换为列表格式
             logger.info(f"Predicting on single image: {input_path}")
             pred = inference.predict_single(input_path)
-            predictions = [{
+            topk_safe = max(1, min(topk, len(pred)))
+            topk_indices = np.argsort(pred)[::-1][:topk_safe]
+            topk_items = [
+                {
+                    "class": inference._remap_label_index(int(idx)),
+                    "score": float(pred[idx]),
+                }
+                for idx in topk_indices
+            ]
+
+            result = {
                 'image_id': os.path.basename(input_path),
                 'disease_class': inference._remap_label_index(int(np.argmax(pred))),
                 'confidence': float(np.max(pred)),
-                'probabilities': pred.tolist(),
-            }]
+                'topk': topk_items,
+            }
+            if save_probs:
+                result['probabilities'] = pred.tolist()
+            if confidence_threshold is not None:
+                result["low_confidence"] = float(np.max(pred)) < confidence_threshold
+            predictions = [result]
         
         # 保存预测结果
         if output_file and predictions:
-            inference.save_predictions(predictions, output_file)
+            inference.save_predictions(predictions, output_file, output_format=output_format)
             logger.info(f"Saved predictions to {output_file}")
             
         return predictions

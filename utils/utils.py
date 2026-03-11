@@ -8,7 +8,7 @@ import numpy as np
 import logging
 from pathlib import Path
 from typing import Dict, List, Tuple, Union, Optional, Any
-from config import config, paths
+from config import config, paths, DefaultConfigs
 from torch import nn
 import torch.nn.functional as F
 from torch.optim.lr_scheduler import OneCycleLR
@@ -17,6 +17,7 @@ import warnings
 from torch.optim import *
 from tqdm import tqdm
 import concurrent.futures
+from torchvision import transforms as T
 
 try:
     from timm.scheduler.cosine_lr import CosineLRScheduler as TimmCosineLRScheduler
@@ -178,7 +179,81 @@ def adjust_learning_rate(optimizer: torch.optim.Optimizer, epoch: int):
         param_group['lr'] = lr
     logger.info(f"Adjusted learning rate to {lr}")
 
-def get_optimizer(model: nn.Module, name: str = 'adamw'):
+
+def get_image_extensions(extensions: Optional[Tuple[str, ...]] = None) -> Tuple[str, ...]:
+    """获取规范化后的图像扩展名列表（小写，带点）"""
+    exts = extensions or config.image_extensions
+    normalized: List[str] = []
+    for ext in exts:
+        if not ext:
+            continue
+        ext = ext.lower()
+        if not ext.startswith("."):
+            ext = f".{ext}"
+        if ext not in normalized:
+            normalized.append(ext)
+    return tuple(normalized)
+
+
+def get_image_glob_patterns(extensions: Optional[Tuple[str, ...]] = None) -> Tuple[str, ...]:
+    """根据扩展名生成 glob 模式（同时包含大小写）"""
+    exts = get_image_extensions(extensions)
+    patterns: List[str] = []
+    for ext in exts:
+        patterns.append(f"*{ext}")
+        patterns.append(f"*{ext.upper()}")
+    return tuple(dict.fromkeys(patterns))
+
+
+def is_image_file(path: str, extensions: Optional[Tuple[str, ...]] = None) -> bool:
+    """判断路径是否为允许的图像文件"""
+    if not path or not isinstance(path, str):
+        return False
+    ext = os.path.splitext(path)[1].lower()
+    return ext in get_image_extensions(extensions)
+
+
+def build_transforms(
+    train: bool = False,
+    test: bool = False,
+    use_data_aug: Optional[bool] = None,
+    img_height: Optional[int] = None,
+    img_weight: Optional[int] = None,
+) -> T.Compose:
+    """构建图像变换管道，训练/测试保持一致。
+
+    参数:
+        train: 是否训练模式
+        test: 是否测试/推理模式
+        use_data_aug: 是否启用数据增强（None则使用全局配置）
+        img_height: 图像高度
+        img_weight: 图像宽度
+    """
+    img_height = img_height or config.img_height
+    img_weight = img_weight or config.img_weight
+    use_data_aug = config.use_data_aug if use_data_aug is None else use_data_aug
+
+    base_transforms: List[T.Compose] = [
+        T.Resize((img_height, img_weight)),
+        T.ToTensor(),
+        T.Normalize(
+            mean=[0.485, 0.456, 0.406],
+            std=[0.229, 0.224, 0.225],
+        ),
+    ]
+
+    if train and not test and use_data_aug:
+        train_transforms = [
+            T.RandomRotation(30),
+            T.RandomHorizontalFlip(),
+            T.RandomVerticalFlip(),
+            T.RandomAffine(45),
+        ]
+        base_transforms[1:1] = train_transforms
+
+    return T.Compose(base_transforms)
+
+def get_optimizer(model: nn.Module, name: str = 'adamw', cfg: Optional[DefaultConfigs] = None):
     """获取优化器
     
     参数:
@@ -188,24 +263,25 @@ def get_optimizer(model: nn.Module, name: str = 'adamw'):
     返回:
         优化器实例
     """
+    cfg = cfg or config
     if name == 'adam':
         optimizer = torch.optim.Adam(
             model.parameters(), 
-            lr=config.lr, 
-            weight_decay=config.weight_decay
+            lr=cfg.lr, 
+            weight_decay=cfg.weight_decay
         )
     elif name == 'adamw':
         optimizer = torch.optim.AdamW(
             model.parameters(), 
-            lr=config.lr, 
-            weight_decay=config.weight_decay
+            lr=cfg.lr, 
+            weight_decay=cfg.weight_decay
         )
     elif name == 'sgd':
         optimizer = torch.optim.SGD(
             model.parameters(), 
-            lr=config.lr, 
+            lr=cfg.lr, 
             momentum=0.9, 
-            weight_decay=config.weight_decay
+            weight_decay=cfg.weight_decay
         )
     elif name == 'ranger':
         # Ranger优化器（RAdam + Lookahead）
@@ -213,21 +289,21 @@ def get_optimizer(model: nn.Module, name: str = 'adamw'):
             from ranger_adabelief import Ranger
             optimizer = Ranger(
                 model.parameters(), 
-                lr=config.lr, 
-                weight_decay=config.weight_decay
+                lr=cfg.lr, 
+                weight_decay=cfg.weight_decay
             )
         except ImportError:
             logger.warning("Ranger optimizer not available, falling back to AdamW")
             optimizer = torch.optim.AdamW(
                 model.parameters(), 
-                lr=config.lr, 
-                weight_decay=config.weight_decay
+                lr=cfg.lr, 
+                weight_decay=cfg.weight_decay
             )
     else:
         raise ValueError(f"Unsupported optimizer: {name}")
     
     # 如果使用Lookahead，包装优化器
-    if config.use_lookahead and name != 'ranger':
+    if cfg.use_lookahead and name != 'ranger':
         try:
             from lookahead import Lookahead
             optimizer = Lookahead(optimizer, k=5, alpha=0.5)
@@ -237,8 +313,12 @@ def get_optimizer(model: nn.Module, name: str = 'adamw'):
     
     return optimizer
 
-def get_scheduler(optimizer: torch.optim.Optimizer, num_epochs: int, 
-                 steps_per_epoch: Optional[int] = None):
+def get_scheduler(
+    optimizer: torch.optim.Optimizer,
+    num_epochs: int,
+    steps_per_epoch: Optional[int] = None,
+    cfg: Optional[DefaultConfigs] = None,
+):
     """获取学习率调度器
     
     参数:
@@ -249,20 +329,21 @@ def get_scheduler(optimizer: torch.optim.Optimizer, num_epochs: int,
     返回:
         学习率调度器
     """
-    if config.scheduler == 'step':
+    cfg = cfg or config
+    if cfg.scheduler == 'step':
         scheduler = torch.optim.lr_scheduler.StepLR(
             optimizer, 
             step_size=10, 
             gamma=0.1
         )
-    elif config.scheduler == 'cosine':
+    elif cfg.scheduler == 'cosine':
         if TimmCosineLRScheduler is not None:
             scheduler = TimmCosineLRScheduler(
                 optimizer,
                 t_initial=num_epochs,
                 lr_min=1e-6,
-                warmup_lr_init=config.lr * config.warmup_factor,
-                warmup_t=config.warmup_epochs,
+                warmup_lr_init=cfg.lr * cfg.warmup_factor,
+                warmup_t=cfg.warmup_epochs,
                 cycle_limit=1,
                 t_in_epochs=True,
             )
@@ -273,13 +354,13 @@ def get_scheduler(optimizer: torch.optim.Optimizer, num_epochs: int,
                 eta_min=1e-6,
             )
             logger.warning("timm is not installed, falling back to CosineAnnealingLR")
-    elif config.scheduler == 'onecycle':
+    elif cfg.scheduler == 'onecycle':
         if steps_per_epoch is None:
             raise ValueError("steps_per_epoch must be provided for OneCycleLR")
         
         scheduler = OneCycleLR(
             optimizer,
-            max_lr=config.lr,
+            max_lr=cfg.lr,
             steps_per_epoch=steps_per_epoch,
             epochs=num_epochs,
             pct_start=0.3,
@@ -287,9 +368,9 @@ def get_scheduler(optimizer: torch.optim.Optimizer, num_epochs: int,
             final_div_factor=1000.0
         )
     else:
-        raise ValueError(f"Unsupported scheduler: {config.scheduler}")
+        raise ValueError(f"Unsupported scheduler: {cfg.scheduler}")
     
-    logger.info(f"Created {config.scheduler} scheduler")
+    logger.info(f"Created {cfg.scheduler} scheduler")
     return scheduler
 
 def mixup_data(x: torch.Tensor, y: torch.Tensor, alpha: float = 1.0):
@@ -578,7 +659,7 @@ class LabelSmoothingCrossEntropy(nn.Module):
         loss = self.confidence * nll_loss + self.smoothing * smooth_loss
         return loss.mean()
 
-def get_loss_function(device: torch.device):
+def get_loss_function(device: torch.device, cfg: Optional[DefaultConfigs] = None):
     """获取损失函数
     
     参数:
@@ -587,20 +668,21 @@ def get_loss_function(device: torch.device):
     返回:
         损失函数
     """
-    if config.use_focal_loss:
-        if config.label_smoothing > 0:
+    cfg = cfg or config
+    if cfg.use_focal_loss:
+        if cfg.label_smoothing > 0:
             criterion = ImprovedFocalLoss(
                 gamma=2.0,
                 alpha=0.25,
-                label_smoothing=config.label_smoothing
+                label_smoothing=cfg.label_smoothing
             ).to(device)
             logger.info("Using Improved Focal Loss with label smoothing")
         else:
             criterion = FocalLoss().to(device)
             logger.info("Using Focal Loss")
     else:
-        if config.label_smoothing > 0:
-            criterion = LabelSmoothingCrossEntropy(config.label_smoothing).to(device)
+        if cfg.label_smoothing > 0:
+            criterion = LabelSmoothingCrossEntropy(cfg.label_smoothing).to(device)
             logger.info("Using Cross Entropy with label smoothing")
         else:
             criterion = nn.CrossEntropyLoss().to(device)

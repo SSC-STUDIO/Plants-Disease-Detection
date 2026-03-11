@@ -3,10 +3,10 @@ import json
 import shutil
 import os
 import zipfile
+import tarfile
 import glob
 from tqdm import tqdm
 import logging
-from pathlib import Path
 import numpy as np
 import cv2
 from PIL import Image
@@ -14,12 +14,18 @@ from skimage.util import random_noise
 from skimage import exposure
 from typing import List, Optional, Tuple, Union, Dict, Any
 from config import config, paths
+from utils.utils import get_image_glob_patterns
 import random
 from concurrent.futures import ThreadPoolExecutor
 import traceback
 import re
 import threading
 import torch
+
+try:
+    import rarfile
+except ImportError:
+    rarfile = None
 
 try:
     import albumentations as A
@@ -74,6 +80,64 @@ def normalize_path(path):
     # 始终转换为正斜杠格式，无论操作系统
     normalized = normalized.replace('\\', '/')
     return normalized
+
+IMAGE_GLOB_PATTERNS = get_image_glob_patterns()
+
+def dedupe_paths(paths_list: List[str]) -> List[str]:
+    """保持顺序去重路径列表。"""
+    unique_paths: List[str] = []
+    seen = set()
+    for path in paths_list:
+        key = os.path.normcase(os.path.abspath(path))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique_paths.append(path)
+    return unique_paths
+
+
+def get_dataset_search_roots(data_dir: str, dataset_path: Optional[str], use_custom_dataset_path: bool) -> List[str]:
+    """构造数据集搜索根目录列表。"""
+    roots: List[str] = []
+    if use_custom_dataset_path and dataset_path:
+        custom_root = dataset_path
+        if os.path.isfile(custom_root):
+            custom_root = os.path.dirname(custom_root)
+        roots.append(normalize_path(custom_root))
+    roots.append(normalize_path(data_dir))
+    return dedupe_paths([root for root in roots if root])
+
+
+def find_archives(search_roots: List[str], patterns: List[str]) -> List[str]:
+    """在给定搜索根目录下查找匹配的压缩包文件。"""
+    files: List[str] = []
+    for root in search_roots:
+        for pattern in patterns:
+            files.extend(glob.glob(os.path.join(root, pattern)))
+            files.extend(glob.glob(os.path.join(root, "**", pattern), recursive=True))
+    return dedupe_paths(files)
+
+
+def glob_images(directory: str, recursive: bool = False) -> List[str]:
+    """收集目录中的图像文件路径。"""
+    if not directory or not os.path.exists(directory):
+        return []
+    if recursive:
+        matches: List[str] = []
+        for pattern in IMAGE_GLOB_PATTERNS:
+            matches.extend(glob.glob(os.path.join(directory, "**", pattern), recursive=True))
+        return matches
+    return [path for pattern in IMAGE_GLOB_PATTERNS for path in glob.glob(os.path.join(directory, pattern))]
+
+
+def count_images(directory: str, recursive: bool = False) -> int:
+    """统计目录中的图像文件数量。"""
+    return len(glob_images(directory, recursive))
+
+
+def directory_has_images(directory: str, recursive: bool = False) -> bool:
+    """判断目录是否包含图像文件。"""
+    return count_images(directory, recursive) > 0
 
 def setup_data(extract=False, process=False, augment=False, status=False, 
                merge=None, cleanup_temp=False, custom_dataset_path=None, 
@@ -320,8 +384,21 @@ class DataPreparation:
                 extract_to = os.path.dirname(zip_path)
             
             logger.info(f"Extracting {os.path.basename(zip_path)} to {extract_to}...")
-            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                zip_ref.extractall(extract_to)
+            lower_path = zip_path.lower()
+            if lower_path.endswith(".zip"):
+                with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                    zip_ref.extractall(extract_to)
+            elif lower_path.endswith((".tar", ".tar.gz", ".tgz", ".gz")):
+                with tarfile.open(zip_path, 'r:*') as tar_ref:
+                    tar_ref.extractall(extract_to)
+            elif lower_path.endswith(".rar"):
+                if rarfile is None:
+                    raise RuntimeError("rarfile is not installed; cannot extract .rar archives")
+                with rarfile.RarFile(zip_path) as rar_ref:
+                    rar_ref.extractall(extract_to)
+            else:
+                logger.error(f"Unsupported archive format: {zip_path}")
+                return False
             logger.info(f"Successfully extracted {os.path.basename(zip_path)}")
             return True
         except Exception as e:
@@ -630,18 +707,6 @@ class DataPreparation:
             "augmented_image_count": 0
         }
 
-        image_patterns = ("*.jpg", "*.jpeg", "*.png", "*.JPG", "*.JPEG", "*.PNG")
-
-        def count_images(directory: str, recursive: bool = False) -> int:
-            if not directory or not os.path.exists(directory):
-                return 0
-            if recursive:
-                return sum(
-                    len(glob.glob(os.path.join(directory, "**", pattern), recursive=True))
-                    for pattern in image_patterns
-                )
-            return sum(len(glob.glob(os.path.join(directory, pattern))) for pattern in image_patterns)
-        
         # 检查是否已提取数据集
         try:
             # 检查提取的数据集文件夹是否存在
@@ -1099,14 +1164,8 @@ class DataPreparation:
         
         logger.info(f"Checking for invalid images in {image_dir}")
         
-        all_images = []
-        for ext in ['.jpg', '.jpeg', '.png', '.JPG', '.JPEG', '.PNG']:
-            # 使用正规化的路径模式，强制使用正斜杠
-            pattern = normalize_path(os.path.join(image_dir, f"**/*{ext}"))
-            all_images.extend(glob.glob(pattern, recursive=True))
-        
-        # 确保所有图片路径都使用正确的格式
-        all_images = [normalize_path(img) for img in all_images]
+        # 收集并规范化所有图片路径
+        all_images = [normalize_path(img) for img in glob_images(image_dir, recursive=True)]
         
         logger.info(f"Found {len(all_images)} images to check")
         
@@ -1419,10 +1478,7 @@ class DataPreparation:
         # 获取所有图片文件
         image_files = []
         try:
-            for image_path in Path(source_dir).rglob('*'):
-                if image_path.suffix.lower() in ['.jpg', '.jpeg', '.png']:
-                    # 确保路径格式正确
-                    image_files.append(normalize_path(str(image_path)))
+            image_files = [normalize_path(path) for path in glob_images(source_dir, recursive=True)]
         except Exception as e:
             logger.error(f"Error finding image files in {source_dir}: {str(e)}")
             return []
@@ -1670,53 +1726,35 @@ class DataPreparation:
                     return False
                     
                 # 检查至少一个子目录包含图像
-                has_images = False
                 for subdir in subdirs:
                     subdir_path = os.path.join(directory_path, subdir)
-                    images = glob.glob(os.path.join(subdir_path, "*.jpg")) + \
-                             glob.glob(os.path.join(subdir_path, "*.jpeg")) + \
-                             glob.glob(os.path.join(subdir_path, "*.png"))
-                    if images:
-                        has_images = True
-                        break
-                        
-                return has_images
+                    if directory_has_images(subdir_path):
+                        return True
+                return False
                 
             # 检查是否为测试目录
             elif dataset_type == 'test':
                 # 测试目录应该直接包含图像
-                images = glob.glob(os.path.join(directory_path, "*.jpg")) + \
-                         glob.glob(os.path.join(directory_path, "*.jpeg")) + \
-                         glob.glob(os.path.join(directory_path, "*.png"))
-                return len(images) > 0
+                return directory_has_images(directory_path)
                 
             # 检查是否为验证目录
             elif dataset_type == 'val':
                 # 验证目录可能包含images子目录
                 images_dir = os.path.join(directory_path, "images")
                 if os.path.exists(images_dir) and os.path.isdir(images_dir):
-                    images = glob.glob(os.path.join(images_dir, "*.jpg")) + \
-                             glob.glob(os.path.join(images_dir, "*.jpeg")) + \
-                             glob.glob(os.path.join(images_dir, "*.png"))
-                    return len(images) > 0
+                    return directory_has_images(images_dir)
 
                 # 或者验证目录也可能和训练目录一样，按类别子目录组织
                 subdirs = [d for d in os.listdir(directory_path) if os.path.isdir(os.path.join(directory_path, d))]
                 if subdirs:
                     for subdir in subdirs:
                         subdir_path = os.path.join(directory_path, subdir)
-                        images = glob.glob(os.path.join(subdir_path, "*.jpg")) + \
-                                 glob.glob(os.path.join(subdir_path, "*.jpeg")) + \
-                                 glob.glob(os.path.join(subdir_path, "*.png"))
-                        if images:
+                        if directory_has_images(subdir_path):
                             return True
                     return False
                     
                 # 或者验证目录也可能直接包含图像
-                images = glob.glob(os.path.join(directory_path, "*.jpg")) + \
-                         glob.glob(os.path.join(directory_path, "*.jpeg")) + \
-                         glob.glob(os.path.join(directory_path, "*.png"))
-                return len(images) > 0
+                return directory_has_images(directory_path)
                 
             else:
                 logger.warning(f"Unknown dataset type: {dataset_type}")
@@ -1754,24 +1792,24 @@ class DataPreparation:
             train_extract_dir = os.path.join(self.paths.temp_dataset_dir, "AgriculturalDisease_trainingset")
             val_extract_dir = os.path.join(self.paths.temp_dataset_dir, "AgriculturalDisease_validationset")
             
-            # 在数据目录下查找训练和验证数据集文件
-            data_dir = normalize_path(self.paths.data_dir)
+            # 在数据目录或自定义路径下查找训练和验证数据集文件
+            search_roots = get_dataset_search_roots(
+                self.paths.data_dir,
+                getattr(self.config, "dataset_path", None),
+                getattr(self.config, "use_custom_dataset_path", False),
+            )
             
-            # 训练数据集模式
-            train_patterns = ["*train*.zip", "*training*.zip", "*TRAIN*.zip"]
-            val_patterns = ["*val*.zip", "*valid*.zip", "*validation*.zip", "*VAL*.zip"]
+            # 训练/验证数据集模式（支持多种压缩格式）
+            train_prefixes = ["*train*", "*training*", "*TRAIN*", "*TRAINING*"]
+            val_prefixes = ["*val*", "*valid*", "*validation*", "*VAL*", "*VALID*", "*VALIDATION*"]
+            train_patterns = [f"{prefix}{ext}" for prefix in train_prefixes for ext in self.config.supported_dataset_formats]
+            val_patterns = [f"{prefix}{ext}" for prefix in val_prefixes for ext in self.config.supported_dataset_formats]
             
             # 查找训练数据集
-            train_files = []
-            for pattern in train_patterns:
-                train_files.extend(glob.glob(os.path.join(data_dir, pattern)))
-                train_files.extend(glob.glob(os.path.join(data_dir, "**", pattern), recursive=True))
+            train_files = find_archives(search_roots, train_patterns)
             
             # 查找验证数据集
-            val_files = []
-            for pattern in val_patterns:
-                val_files.extend(glob.glob(os.path.join(data_dir, pattern)))
-                val_files.extend(glob.glob(os.path.join(data_dir, "**", pattern), recursive=True))
+            val_files = find_archives(search_roots, val_patterns)
             
             # 提取训练数据集
             if train_files:
@@ -2044,7 +2082,7 @@ class DataPreparation:
                 train_sources = []
                 if os.path.exists(self.paths.train_dir) and os.path.isdir(self.paths.train_dir):
                     train_sources.append(self.paths.train_dir)
-                if config.merge_augmented_data and os.path.exists(self.paths.aug_train_dir) and os.path.isdir(self.paths.aug_train_dir):
+                if self.config.merge_augmented_data and os.path.exists(self.paths.aug_train_dir) and os.path.isdir(self.paths.aug_train_dir):
                     train_sources.append(self.paths.aug_train_dir)
                 
                 # 确保目标目录存在
@@ -2061,19 +2099,15 @@ class DataPreparation:
                             os.makedirs(target_class_dir, exist_ok=True)
                             
                             # 复制图像文件
-                            for ext in ['*.jpg', '*.jpeg', '*.png']:
-                                image_files = glob.glob(os.path.join(source_class_dir, ext))
-                                for image_file in image_files:
-                                    filename = os.path.basename(image_file)
-                                    target_file = os.path.join(target_class_dir, filename)
-                                    if not os.path.exists(target_file):
-                                        shutil.copy2(image_file, target_file)
+                            for image_file in glob_images(source_class_dir):
+                                filename = os.path.basename(image_file)
+                                target_file = os.path.join(target_class_dir, filename)
+                                if not os.path.exists(target_file):
+                                    shutil.copy2(image_file, target_file)
                     
                     # 检查合并后的训练数据
-                    merged_images = glob.glob(os.path.join(self.paths.merged_train_dir, "**/*.jpg"), recursive=True)
-                    merged_images += glob.glob(os.path.join(self.paths.merged_train_dir, "**/*.jpeg"), recursive=True)
-                    merged_images += glob.glob(os.path.join(self.paths.merged_train_dir, "**/*.png"), recursive=True)
-                    logger.info(f"The merged training dataset contains {len(merged_images)} images")
+                    merged_images = count_images(self.paths.merged_train_dir, recursive=True)
+                    logger.info(f"The merged training dataset contains {merged_images} images")
                     success = True
                 else:
                     logger.warning("No merged training data sources were found")
@@ -2093,19 +2127,15 @@ class DataPreparation:
                     for source in test_sources:
                         logger.info(f"正在合并测试数据源: {source}")
                         # 对于测试数据，直接复制图像文件
-                        for ext in ['*.jpg', '*.jpeg', '*.png']:
-                            image_files = glob.glob(os.path.join(source, ext))
-                            for image_file in image_files:
-                                filename = os.path.basename(image_file)
-                                target_file = os.path.join(self.paths.merged_test_dir, filename)
-                                if not os.path.exists(target_file):
-                                    shutil.copy2(image_file, target_file)
+                        for image_file in glob_images(source):
+                            filename = os.path.basename(image_file)
+                            target_file = os.path.join(self.paths.merged_test_dir, filename)
+                            if not os.path.exists(target_file):
+                                shutil.copy2(image_file, target_file)
                     
                     # 检查合并后的测试数据
-                    merged_images = glob.glob(os.path.join(self.paths.merged_test_dir, "*.jpg"))
-                    merged_images += glob.glob(os.path.join(self.paths.merged_test_dir, "*.jpeg"))
-                    merged_images += glob.glob(os.path.join(self.paths.merged_test_dir, "*.png"))
-                    logger.info(f"The merged test dataset includes {len(merged_images)} images")
+                    merged_images = count_images(self.paths.merged_test_dir)
+                    logger.info(f"The merged test dataset includes {merged_images} images")
                     success = True
                 else:
                     logger.warning("No test data sources that can be merged were found")
@@ -2131,19 +2161,15 @@ class DataPreparation:
                             os.makedirs(target_class_dir, exist_ok=True)
                             
                             # 复制图像文件
-                            for ext in ['*.jpg', '*.jpeg', '*.png']:
-                                image_files = glob.glob(os.path.join(source_class_dir, ext))
-                                for image_file in image_files:
-                                    filename = os.path.basename(image_file)
-                                    target_file = os.path.join(target_class_dir, filename)
-                                    if not os.path.exists(target_file):
-                                        shutil.copy2(image_file, target_file)
+                            for image_file in glob_images(source_class_dir):
+                                filename = os.path.basename(image_file)
+                                target_file = os.path.join(target_class_dir, filename)
+                                if not os.path.exists(target_file):
+                                    shutil.copy2(image_file, target_file)
                     
                     # 检查合并后的验证数据
-                    merged_images = glob.glob(os.path.join(self.paths.merged_val_dir, "**/*.jpg"), recursive=True)
-                    merged_images += glob.glob(os.path.join(self.paths.merged_val_dir, "**/*.jpeg"), recursive=True)
-                    merged_images += glob.glob(os.path.join(self.paths.merged_val_dir, "**/*.png"), recursive=True)
-                    logger.info(f"The merged validation dataset contains {len(merged_images)} images")
+                    merged_images = count_images(self.paths.merged_val_dir, recursive=True)
+                    logger.info(f"The merged validation dataset contains {merged_images} images")
                     success = True
                 else:
                     logger.warning("No consolidable validation data sources were found")

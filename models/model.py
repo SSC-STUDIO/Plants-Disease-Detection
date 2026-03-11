@@ -294,27 +294,33 @@ def get_ensemble_model(num_classes, pretrained=True):
     
     return EnsembleModel()
 
+MODEL_REGISTRY = {
+    "densenet169": get_densenet169,
+    "efficientnet_b4": get_efficientnet,
+    "efficientnetv2_s": get_efficientnetv2,
+    "convnext_small": get_convnext,
+    "swin_transformer": get_swin_transformer,
+    "hybrid_model": get_hybrid_model,
+    "ensemble_model": get_ensemble_model,
+}
+
+
+def get_available_models():
+    """返回可用模型名称列表"""
+    return list(MODEL_REGISTRY.keys())
+
+
 def get_net(model_name, num_classes, pretrained=True):
     """选择并返回模型
-    
+
     可以在此选择哪个模型用于训练
-    
+
     Args:
         pretrained (bool): 是否使用预训练权重，默认为True
     """
-    models = {
-        "densenet169": get_densenet169,
-        "efficientnet_b4": get_efficientnet,
-        "efficientnetv2_s": get_efficientnetv2,
-        "convnext_small": get_convnext,
-        "swin_transformer": get_swin_transformer,
-        "hybrid_model": get_hybrid_model,
-        "ensemble_model": get_ensemble_model
-    }
-    
-    if model_name in models:
+    if model_name in MODEL_REGISTRY:
         print(f"Using model: {model_name}")
-        return models[model_name](num_classes, pretrained=pretrained)
+        return MODEL_REGISTRY[model_name](num_classes, pretrained=pretrained)
     else:
         print(f"Model {model_name} not found, using default EfficientNetV2")
         return get_efficientnetv2(num_classes, pretrained=pretrained)

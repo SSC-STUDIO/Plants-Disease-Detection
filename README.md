@@ -23,10 +23,59 @@ python main.py
 - 梯度裁剪
 - 更详细的训练统计
 
+### 新增命令（全面升级）
+```bash
+# 查看版本与环境信息（JSON）
+python main.py version
+
+# 只输出项目版本
+python main.py --version
+
+# 导出当前配置
+python main.py config --output ./reports/config.json
+
+# 列出可用模型
+python main.py models
+
+# 评估模型（生成指标报告）
+python main.py evaluate --model checkpoints/best/efficientnetv2_s/0/best_model.pth.tar
+
+# 数据集统计（输出类别分布与缺失类别）
+python main.py stats --data ./data/train --output ./reports/train_stats.json
+
+# 推理增强（输出Top-K与完整概率）
+python main.py predict --input ./data/test/images --output ./submit/prediction_full.json --output-format full --topk 5 --save-probs
+```
+
 ## 安装依赖
 
 ```bash
 uv sync
+```
+
+如果系统没有 `uv`（或 `uv` 不在 PATH）：
+```bash
+python -m pip install uv
+python -m uv sync
+```
+
+如果不使用 `uv`，可直接用 `pip`：
+```bash
+python -m pip install -r requirements.txt
+```
+
+可选扩展依赖：
+```bash
+python -m pip install -r requirements-extras.txt
+```
+
+说明：当前 PyTorch 在 Windows 上对 Python 3.14 的支持尚不完善，推荐使用 Python 3.12 或 3.13。
+
+快速创建虚拟环境（无 uv）：
+```bash
+py -3.12 -m venv .venv
+.\.venv\Scripts\activate
+python -m pip install -r requirements.txt
 ```
 ## 数据集使用 [https://github.com/spytensor/plants_disease_detection]
 ## 项目结构

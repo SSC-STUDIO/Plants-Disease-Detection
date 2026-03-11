@@ -7,7 +7,10 @@ import argparse
 import logging
 import time
 import glob
-from typing import Dict, Any
+import json
+import platform
+from dataclasses import asdict
+from typing import Dict, Any, List, Optional, Tuple
 
 # 将项目根目录添加到路径
 project_dir = os.path.dirname(os.path.abspath(__file__))
@@ -15,8 +18,6 @@ sys.path.append(project_dir)
 
 # 导入配置
 from config import config, paths
-from dataset.data_prep import normalize_path, setup_data
-from libs.inference import predict
 
 # 确保处理器的级别正确设置
 root_logger = logging.getLogger()
@@ -24,6 +25,376 @@ for handler in root_logger.handlers:
     handler.setLevel(logging.INFO)
 
 logger = logging.getLogger('Main')
+
+
+def dedupe_paths(paths_list):
+    """保持顺序去重路径列表。"""
+    unique_paths = []
+    seen = set()
+
+    for path in paths_list:
+        key = os.path.normcase(os.path.abspath(normalize_path(path)))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique_paths.append(path)
+
+    return unique_paths
+
+
+def load_predict_function():
+    """按需加载推理函数，避免非推理命令被重依赖阻塞。"""
+    try:
+        from libs.inference import predict
+    except ModuleNotFoundError as exc:
+        logger.error(
+            "Inference dependencies are unavailable while loading predict pipeline: %s",
+            exc,
+        )
+        raise
+
+    return predict
+
+
+def load_train_function():
+    """按需加载训练函数，缺依赖时给出可读错误而不是抛栈。"""
+    try:
+        from libs.training import train_model
+    except ModuleNotFoundError as exc:
+        logger.error(
+            "Training dependencies are unavailable while loading train pipeline: %s",
+            exc,
+        )
+        raise
+
+    return train_model
+
+def normalize_path(path: Optional[str]) -> Optional[str]:
+    """轻量级路径规范化，避免在轻量命令中加载重依赖。"""
+    if path is None:
+        return None
+    normalized = os.path.normpath(path)
+    return normalized.replace('\\', '/')
+
+
+def get_image_extensions_local(extensions: Optional[Tuple[str, ...]] = None) -> Tuple[str, ...]:
+    """获取规范化后的图像扩展名列表（小写，带点）。"""
+    exts = extensions or getattr(config, "image_extensions", ())
+    normalized: List[str] = []
+    for ext in exts:
+        if not ext:
+            continue
+        ext = ext.lower()
+        if not ext.startswith("."):
+            ext = f".{ext}"
+        if ext not in normalized:
+            normalized.append(ext)
+    return tuple(normalized)
+
+
+def get_image_glob_patterns_local(extensions: Optional[Tuple[str, ...]] = None) -> Tuple[str, ...]:
+    """根据扩展名生成 glob 模式（同时包含大小写）。"""
+    exts = get_image_extensions_local(extensions)
+    patterns: List[str] = []
+    for ext in exts:
+        patterns.append(f"*{ext}")
+        patterns.append(f"*{ext.upper()}")
+    return tuple(dict.fromkeys(patterns))
+
+
+IMAGE_EXTENSIONS = get_image_extensions_local()
+COPY_PATTERNS = get_image_glob_patterns_local(IMAGE_EXTENSIONS)
+
+
+def get_project_version() -> str:
+    """读取 pyproject.toml 中的版本信息。"""
+    pyproject_path = os.path.join(project_dir, "pyproject.toml")
+    if not os.path.exists(pyproject_path):
+        return "unknown"
+    try:
+        import tomllib  # Python 3.11+
+    except Exception:
+        return "unknown"
+    try:
+        with open(pyproject_path, "rb") as f:
+            data = tomllib.load(f)
+        return data.get("project", {}).get("version", "unknown")
+    except Exception:
+        return "unknown"
+
+
+def get_version_payload() -> Dict[str, Any]:
+    """收集项目与运行环境版本信息。"""
+    payload: Dict[str, Any] = {
+        "project": "plants-disease-detection",
+        "version": get_project_version(),
+        "python": sys.version.split()[0],
+        "platform": platform.platform(),
+    }
+    try:
+        import torch
+
+        payload.update({
+            "torch": torch.__version__,
+            "cuda_available": torch.cuda.is_available(),
+            "cuda_version": torch.version.cuda,
+        })
+    except Exception:
+        payload.update({
+            "torch": None,
+            "cuda_available": False,
+            "cuda_version": None,
+        })
+    return payload
+
+
+def print_version_info(simple: bool = False) -> None:
+    """输出版本信息到 stdout。"""
+    payload = get_version_payload()
+    if simple:
+        print(f"{payload['project']} {payload['version']}")
+        return
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+
+
+def export_config(output_path: Optional[str] = None, pretty: bool = True) -> Dict[str, Any]:
+    """导出当前配置到 JSON 文件（或 stdout）。"""
+    payload = asdict(config)
+    if output_path:
+        os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+        with open(output_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2 if pretty else None)
+    return payload
+
+
+def list_image_files(directory: str) -> List[str]:
+    """列出目录中的图像文件（按扩展名过滤）。"""
+    if not os.path.isdir(directory):
+        return []
+    return [f for f in os.listdir(directory) if f.lower().endswith(IMAGE_EXTENSIONS)]
+
+
+def has_image_files(path: str) -> bool:
+    """判断路径是否包含至少一张图像。"""
+    if not os.path.exists(path):
+        return False
+    if os.path.isfile(path):
+        return path.lower().endswith(IMAGE_EXTENSIONS)
+    return len(list_image_files(path)) > 0
+
+
+def get_dataset_search_roots(custom_dataset_path: Optional[str]) -> List[str]:
+    """根据自定义路径与默认数据目录构造搜索根目录列表。"""
+    roots: List[str] = []
+    if custom_dataset_path:
+        custom_root = custom_dataset_path
+        if os.path.isfile(custom_root):
+            custom_root = os.path.dirname(custom_root)
+        roots.append(normalize_path(custom_root))
+    roots.append(normalize_path(paths.data_dir))
+    return dedupe_paths([root for root in roots if root])
+
+
+def find_test_archives(search_roots: List[str]) -> List[str]:
+    """在给定根目录中查找测试集压缩包文件。"""
+    test_files: List[str] = []
+    for root in search_roots:
+        for ext in config.supported_dataset_formats:
+            test_files.extend(glob.glob(os.path.join(root, f"*test*{ext}")))
+            test_files.extend(glob.glob(os.path.join(root, f"*TEST*{ext}")))
+            test_files.extend(glob.glob(os.path.join(root, "**", f"*test*{ext}"), recursive=True))
+            test_files.extend(glob.glob(os.path.join(root, "**", f"*TEST*{ext}"), recursive=True))
+    return dedupe_paths(test_files)
+
+
+def find_test_archives_by_pattern(search_roots: List[str], pattern: Optional[str]) -> List[str]:
+    """使用显式模式查找测试集压缩包。"""
+    if not pattern:
+        return []
+    test_files: List[str] = []
+    for root in search_roots:
+        test_files.extend(glob.glob(os.path.join(root, pattern)))
+        test_files.extend(glob.glob(os.path.join(root, "**", pattern), recursive=True))
+    return dedupe_paths(test_files)
+
+
+def collect_test_image_dirs(extract_to: str) -> List[str]:
+    """从解压目录中收集可能的测试图像目录。"""
+    potential_image_dirs: List[str] = []
+    potential_image_dirs_abs: List[str] = []
+
+    def add_dir(path: str) -> None:
+        if os.path.exists(path) and os.path.isdir(path):
+            abs_path = os.path.abspath(path)
+            if abs_path not in potential_image_dirs_abs:
+                potential_image_dirs.append(path)
+                potential_image_dirs_abs.append(abs_path)
+
+    # 1. 标准 images 目录
+    add_dir(normalize_path(os.path.join(extract_to, "images")))
+
+    # 2. 可能的测试子目录
+    test_subdirs = glob.glob(os.path.join(extract_to, "AgriculturalDisease_test*"))
+    for subdir in test_subdirs:
+        add_dir(os.path.join(subdir, "images"))
+
+    # 3. 递归搜索包含图像的目录
+    for root, _, files in os.walk(extract_to):
+        root_abs = os.path.abspath(root)
+        if any(root_abs == dir_abs or root_abs.startswith(dir_abs + os.sep) for dir_abs in potential_image_dirs_abs):
+            continue
+        if os.path.basename(root) == "labels":
+            continue
+        if any(file.lower().endswith(IMAGE_EXTENSIONS) for file in files):
+            add_dir(root)
+
+    return potential_image_dirs
+
+
+def copy_test_images(data_prep, source_dirs: List[str], dest_dir: str) -> int:
+    """复制测试图像到目标目录并返回总数量。"""
+    copied_count = 0
+    for image_dir in source_dirs:
+        count = 0
+        for pattern in COPY_PATTERNS:
+            count += data_prep.copy_files_to_folder(image_dir, dest_dir, file_pattern=pattern)
+        copied_count += count
+        logger.info(f"Copied {count} image files from {image_dir} to {dest_dir}")
+    return copied_count
+
+
+def prepare_test_data(custom_dataset_path: Optional[str] = None) -> bool:
+    """准备测试数据（解压与复制到测试目录）。"""
+    from dataset.data_prep import DataPreparation
+
+    data_prep = DataPreparation()
+    config.merge_test_datasets = True
+    logger.info("Test dataset merging enabled")
+
+    search_roots = get_dataset_search_roots(custom_dataset_path)
+    test_files = find_test_archives(search_roots)
+    if not test_files:
+        test_files = find_test_archives_by_pattern(search_roots, config.test_name_pattern)
+
+    if not test_files:
+        logger.error("Could not find any test dataset files")
+        return False
+
+    logger.info(f"Found the following test dataset files: {test_files}")
+
+    extract_to = normalize_path(os.path.join(paths.temp_dataset_dir, "AgriculturalDisease_testset"))
+    os.makedirs(extract_to, exist_ok=True)
+
+    for test_file in test_files:
+        logger.info(f"Extracting test dataset file: {test_file}")
+        if data_prep.extract_zip_file(test_file, extract_to):
+            logger.info(f"Successfully extracted {test_file}")
+        else:
+            logger.error(f"Failed to extract {test_file}")
+
+    os.makedirs(paths.test_images_dir, exist_ok=True)
+    potential_image_dirs = collect_test_image_dirs(extract_to)
+
+    if not potential_image_dirs:
+        logger.error("No test image directory found in the extracted directory")
+        return False
+
+    logger.info(f"Found the following test image directories: {potential_image_dirs}")
+    copied_count = copy_test_images(data_prep, potential_image_dirs, paths.test_images_dir)
+
+    if copied_count > 0:
+        logger.info(f"Successfully prepared test data: copied {copied_count} image files in total")
+        logger.info("Cleaning up temporary test data files...")
+        data_prep.cleanup_temp_files(force=True)
+        return True
+
+    logger.warning("Could not find any test image files")
+    return False
+
+
+def apply_train_overrides(args: argparse.Namespace) -> None:
+    """根据命令行参数覆盖训练配置。"""
+    def set_if_not_none(arg_name: str, config_attr: str, label: str) -> None:
+        if hasattr(args, arg_name):
+            value = getattr(args, arg_name)
+            if value is not None and value != "":
+                setattr(config, config_attr, value)
+                logger.info(f"Setting {label} to {value}")
+
+    def set_if_true(arg_name: str, config_attr: str, label: str) -> None:
+        if getattr(args, arg_name, False):
+            setattr(config, config_attr, False)
+            logger.info(label)
+
+    def resolve_toggle(enable_attr: str, disable_attr: str, config_attr: str, enable_msg: str, disable_msg: str) -> None:
+        enable_flag = getattr(args, enable_attr, False)
+        disable_flag = getattr(args, disable_attr, False)
+        if enable_flag and disable_flag:
+            logger.warning(f"Both --{enable_attr.replace('_', '-')} and --{disable_attr.replace('_', '-')} specified, using --{enable_attr.replace('_', '-')}")
+        if enable_flag:
+            setattr(config, config_attr, True)
+            logger.info(enable_msg)
+        elif disable_flag:
+            setattr(config, config_attr, False)
+            logger.info(disable_msg)
+
+    set_if_not_none('epochs', 'epoch', 'epochs')
+    set_if_not_none('model', 'model_name', 'model')
+    set_if_not_none('batch_size', 'train_batch_size', 'batch size')
+    set_if_not_none('lr', 'lr', 'learning rate')
+
+    if getattr(args, 'dataset_path', None):
+        config.dataset_path = args.dataset_path
+        config.use_custom_dataset_path = True
+        logger.info(f"Using custom dataset path: {config.dataset_path}")
+
+    resolve_toggle(
+        'enable_augmentation',
+        'disable_augmentation',
+        'use_data_aug',
+        'Data augmentation enabled for training',
+        'Data augmentation explicitly disabled for training',
+    )
+
+    if hasattr(args, 'merge_augmented') and hasattr(args, 'no_merge_augmented'):
+        if args.merge_augmented and args.no_merge_augmented:
+            logger.warning("Both --merge-augmented and --no-merge-augmented specified, using --merge-augmented")
+            config.merge_augmented_data = True
+        elif args.merge_augmented:
+            config.merge_augmented_data = True
+            logger.info("Will merge augmented data with original training data")
+        elif args.no_merge_augmented:
+            config.merge_augmented_data = False
+            logger.info("Will not merge augmented data with original training data")
+
+    set_if_not_none('optimizer', 'optimizer', 'optimizer')
+    set_if_not_none('weight_decay', 'weight_decay', 'weight decay')
+    set_if_true('no_lookahead', 'use_lookahead', 'Disabling Lookahead optimizer wrapper')
+
+    set_if_not_none('scheduler', 'scheduler', 'LR scheduler')
+    set_if_not_none('warmup_epochs', 'warmup_epochs', 'warmup epochs')
+    set_if_not_none('warmup_factor', 'warmup_factor', 'warmup factor')
+
+    set_if_true('no_mixup', 'use_mixup', 'Disabling Mixup data augmentation')
+    set_if_not_none('mixup_alpha', 'mixup_alpha', 'Mixup alpha')
+    set_if_not_none('cutmix_prob', 'cutmix_prob', 'CutMix probability')
+    set_if_true('no_random_erasing', 'use_random_erasing', 'Disabling random erasing augmentation')
+
+    set_if_true('no_early_stopping', 'use_early_stopping', 'Disabling early stopping')
+    set_if_not_none('patience', 'early_stopping_patience', 'early stopping patience')
+
+    set_if_true('no_amp', 'use_amp', 'Disabling automatic mixed precision training')
+    set_if_not_none('gradient_clip_val', 'gradient_clip_val', 'gradient clipping value')
+
+    set_if_true('no_ema', 'use_ema', 'Disabling Exponential Moving Average (EMA)')
+    set_if_not_none('ema_decay', 'ema_decay', 'EMA decay rate')
+
+    set_if_not_none('device', 'device', 'device')
+    set_if_not_none('gpus', 'gpus', 'GPUs')
+
+    set_if_not_none('seed', 'seed', 'random seed')
+    set_if_not_none('label_smoothing', 'label_smoothing', 'label smoothing')
+    set_if_true('no_gradient_checkpointing', 'use_gradient_checkpointing', 'Disabling gradient checkpointing')
 
 def add_train_arguments(train_parser: argparse.ArgumentParser) -> None:
     """添加训练相关的参数到解析器
@@ -132,6 +503,8 @@ def setup_parser() -> argparse.ArgumentParser:
         description="Plant Disease Detection System",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
+    parser.add_argument('--version', action='store_true',
+                        help='Show project version and exit')
     
     # 为不同的命令创建子解析器
     subparsers = parser.add_subparsers(dest='command', help='Command to execute')
@@ -177,10 +550,77 @@ def setup_parser() -> argparse.ArgumentParser:
                                          help='Run inference with a trained model')
     infer_parser.add_argument('--model', type=str, 
                              help=f'Path to model weights file (default: auto-detect best model)')
+    infer_parser.add_argument('--model-name', type=str,
+                             help='Model architecture name (override config.model_name)')
     infer_parser.add_argument('--input', type=str, 
                              help=f'Path to image folder or single image (default: {paths.test_images_dir})')
     infer_parser.add_argument('--output', type=str, 
                              help=f'Output JSON file path (default: {paths.prediction_file})')
+    infer_parser.add_argument('--batch-size', type=int,
+                             help='Batch size for inference on directories')
+    infer_parser.add_argument('--num-workers', type=int,
+                             help='Number of workers for inference dataloader')
+    infer_parser.add_argument('--topk', type=int, default=3,
+                             help='Top-k predictions to include')
+    infer_parser.add_argument('--save-probs', action='store_true',
+                             help='Include full probability vector in output (only for output-format=full)')
+    infer_parser.add_argument('--output-format', choices=['submit', 'full'], default='submit',
+                             help='Output format: submit (image_id + class) or full (with confidence/topk)')
+    infer_parser.add_argument('--confidence-threshold', type=float,
+                             help='Mark predictions below this confidence as low_confidence')
+    infer_parser.add_argument('--device', type=str, choices=['auto', 'cuda', 'cpu'],
+                             help='Device for inference (default: auto)')
+
+    # 评估命令
+    eval_parser = subparsers.add_parser('evaluate',
+                                        help='Evaluate a trained model on labeled data')
+    eval_parser.add_argument('--model', type=str,
+                             help='Path to model weights file (default: auto-detect best model)')
+    eval_parser.add_argument('--model-name', type=str,
+                             help='Model architecture name (override config.model_name)')
+    eval_parser.add_argument('--data', type=str,
+                             help='Path to labeled dataset directory (default: auto-detect val set)')
+    eval_parser.add_argument('--batch-size', type=int,
+                             help='Batch size for evaluation')
+    eval_parser.add_argument('--num-workers', type=int,
+                             help='Number of workers for evaluation dataloader')
+    eval_parser.add_argument('--topk', type=int, default=2,
+                             help='Top-k accuracy to report')
+    eval_parser.add_argument('--output-dir', type=str,
+                             help=f'Output directory for evaluation reports (default: {paths.report_dir})')
+    eval_parser.add_argument('--no-confusion', action='store_true',
+                             help='Skip confusion matrix output')
+    eval_parser.add_argument('--no-report', action='store_true',
+                             help='Skip classification report output')
+    eval_parser.add_argument('--device', type=str, choices=['auto', 'cuda', 'cpu'],
+                             help='Device for evaluation (default: auto)')
+
+    # 数据集统计命令
+    stats_parser = subparsers.add_parser('stats',
+                                         help='Summarize dataset statistics')
+    stats_parser.add_argument('--data', type=str,
+                              help='Path to dataset directory (default: auto-detect train set)')
+    stats_parser.add_argument('--top', type=int, default=10,
+                              help='Top-N classes to include in summary')
+    stats_parser.add_argument('--output', type=str,
+                              help='Output JSON file path for dataset stats')
+
+    # 版本信息命令
+    version_parser = subparsers.add_parser('version', help='Show detailed version info')
+    version_parser.add_argument('--simple', action='store_true',
+                                help='Only show project name and version')
+
+    # 配置导出命令
+    config_parser = subparsers.add_parser('config', help='Export current config to JSON')
+    config_parser.add_argument('--output', type=str,
+                               help='Output JSON file path (default: stdout)')
+    config_parser.add_argument('--compact', action='store_true',
+                               help='Disable pretty JSON formatting')
+
+    # 模型列表命令
+    models_parser = subparsers.add_parser('models', help='List available model architectures')
+    models_parser.add_argument('--json', action='store_true',
+                               help='Output as JSON list')
     
     return parser
 
@@ -194,6 +634,9 @@ def prepare_data(args: argparse.Namespace) -> Dict[str, Any]:
         数据准备结果字典
     """
     logger.info("Starting data preparation")
+
+    # 延迟导入重依赖，避免轻量命令启动慢
+    from dataset.data_prep import setup_data
     
     # 确定要执行的操作
     extract = args.extract if hasattr(args, 'extract') else False
@@ -229,7 +672,8 @@ def prepare_data(args: argparse.Namespace) -> Dict[str, Any]:
         config.use_data_aug = False
         logger.info("Data augmentation explicitly disabled for training")
     else:
-        logger.info("Data augmentation enabled for training")
+        state = "enabled" if config.use_data_aug else "disabled"
+        logger.info(f"Data augmentation is {state} for training (config.use_data_aug={config.use_data_aug})")
     
     # 获取清理临时文件的参数
     cleanup_temp = getattr(args, 'cleanup', False)
@@ -262,7 +706,13 @@ def train_pipeline(args: argparse.Namespace) -> None:
     logger.info("Starting training pipeline")
     
     # 首先检查是否需要数据准备
-    if args.prepare:
+    should_prepare = getattr(args, 'prepare', False)
+    if getattr(args, 'no_prepare', False):
+        if should_prepare:
+            logger.warning("Both --prepare and --no-prepare specified, using --no-prepare")
+        should_prepare = False
+
+    if should_prepare:
         logger.info("Running data preparation before training")
         # Create prepare data arguments
         prepare_args = argparse.Namespace(
@@ -280,251 +730,21 @@ def train_pipeline(args: argparse.Namespace) -> None:
     else:
         # 检查测试数据是否存在，不存在时仅处理测试数据
         test_images_path = normalize_path(paths.test_images_dir)
-        if not os.path.exists(test_images_path) or len(glob.glob(os.path.join(test_images_path, "*.*"))) == 0:
+        if not has_image_files(test_images_path):
             logger.warning(f"Test image directory does not exist or is empty: {test_images_path}")
             logger.info("Preparing test data only")
-            
-            # 初始化DataPreparation对象并仅提取和处理测试数据
-            from dataset.data_prep import DataPreparation
-            data_prep = DataPreparation()
-            
-            # 设置测试集合并标志
-            config.merge_test_datasets = True
-            logger.info("Test dataset merging enabled")
-            
-            # 获取data目录下所有包含test的zip文件
-            data_dir = normalize_path(paths.data_dir)
-            test_files = []
-            for ext in config.supported_dataset_formats:
-                test_files.extend(glob.glob(os.path.join(data_dir, f"*test*{ext}")))
-                test_files.extend(glob.glob(os.path.join(data_dir, f"*TEST*{ext}")))
-                test_files.extend(glob.glob(os.path.join(data_dir, "**", f"*test*{ext}")))
-                test_files.extend(glob.glob(os.path.join(data_dir, "**", f"*TEST*{ext}")))
-            
-            if test_files:
-                logger.info(f"Found the following test dataset files: {test_files}")
-                
-                # 确保测试解压目录存在
-                extract_to = normalize_path(os.path.join(paths.temp_dataset_dir, "AgriculturalDisease_testset"))
-                os.makedirs(extract_to, exist_ok=True)
-                
-                # 解压所有测试数据集文件
-                for test_file in test_files:
-                    logger.info(f"Extracting test dataset file: {test_file}")
-                    if data_prep.extract_zip_file(test_file, extract_to):
-                        logger.info(f"Successfully extracted {test_file}")
-                    else:
-                        logger.error(f"Failed to extract {test_file}")
-                
-                # 确保测试目录存在
-                os.makedirs(paths.test_images_dir, exist_ok=True)
-                
-                # 查找所有可能的测试图像目录
-                potential_image_dirs = []
-                potential_image_dirs_abs = []  # 存储绝对路径，用于检查
-                
-                # 1. 直接检查标准images目录
-                standard_images_dir = normalize_path(os.path.join(extract_to, "images"))
-                if os.path.exists(standard_images_dir) and os.path.isdir(standard_images_dir):
-                    potential_image_dirs.append(standard_images_dir)
-                    potential_image_dirs_abs.append(os.path.abspath(standard_images_dir))
-                
-                # 2. 检查可能的测试A/B子目录中的images
-                test_subdirs = glob.glob(os.path.join(extract_to, "AgriculturalDisease_test*"))
-                for subdir in test_subdirs:
-                    subdir_images = os.path.join(subdir, "images")
-                    if os.path.exists(subdir_images) and os.path.isdir(subdir_images):
-                        potential_image_dirs.append(subdir_images)
-                        potential_image_dirs_abs.append(os.path.abspath(subdir_images))
-                
-                # 3. 递归搜索其他可能包含图像的目录
-                for root, dirs, files in os.walk(extract_to):
-                    root_abs = os.path.abspath(root)
-                    # 检查当前目录是否已经在潜在图像目录列表中或是其子目录
-                    already_included = False
-                    for dir_abs in potential_image_dirs_abs:
-                        if root_abs == dir_abs or root_abs.startswith(dir_abs + os.sep):
-                            already_included = True
-                            break
-                    
-                    if not already_included:
-                        image_files = [f for f in files if f.lower().endswith(('.jpg', '.jpeg', '.png', '.bmp', '.webp', '.heic'))]
-                        if image_files and os.path.basename(root) != "labels":
-                            potential_image_dirs.append(root)
-                            potential_image_dirs_abs.append(root_abs)
-                
-                if potential_image_dirs:
-                    logger.info(f"Found the following test image directories: {potential_image_dirs}")
-                    
-                    # 复制所有测试图像到测试目录
-                    copied_count = 0
-                    for image_dir in potential_image_dirs:
-                        count = data_prep.copy_files_to_folder(
-                            image_dir, 
-                            paths.test_images_dir, 
-                            file_pattern="*.jpg"
-                        )
-                        count += data_prep.copy_files_to_folder(
-                            image_dir, 
-                            paths.test_images_dir, 
-                            file_pattern="*.png"
-                        )
-                        count += data_prep.copy_files_to_folder(
-                            image_dir,
-                            paths.test_images_dir,
-                            file_pattern="*.jpeg"
-                        )
-                        count += data_prep.copy_files_to_folder(
-                            image_dir,
-                            paths.test_images_dir,
-                            file_pattern="*.JPEG"
-                        )
-                        copied_count += count
-                        logger.info(f"Copied {count} image files from {image_dir} to {paths.test_images_dir}")
-                    
-                    if copied_count > 0:
-                        logger.info(f"Successfully prepared test data: copied {copied_count} image files in total")
-                        logger.info("Cleaning up temporary test data files...")
-                        data_prep.cleanup_temp_files(force=True)
-                    else:
-                        logger.warning(f"Could not find any test image files")
-                else:
-                    logger.error("No test image directory found in the extracted directory")
-            else:
-                logger.error("Could not find any test dataset files")
+            prepare_test_data(custom_dataset_path=getattr(args, 'dataset_path', None))
     
     # 根据命令行参数覆盖配置
-    # Basic training parameters
-    if hasattr(args, 'epochs') and args.epochs:
-        config.epoch = args.epochs
-        logger.info(f"Setting epochs to {config.epoch}")
-    
-    if hasattr(args, 'model') and args.model:
-        config.model_name = args.model
-        logger.info(f"Setting model to {config.model_name}")
-    
-    if hasattr(args, 'batch_size') and args.batch_size:
-        config.train_batch_size = args.batch_size
-        logger.info(f"Setting batch size to {config.train_batch_size}")
-        
-    if hasattr(args, 'lr') and args.lr:
-        config.lr = args.lr
-        logger.info(f"Setting learning rate to {config.lr}")
-        
-    # 设置数据集路径
-    if hasattr(args, 'dataset_path') and args.dataset_path:
-        config.dataset_path = args.dataset_path
-        config.use_custom_dataset_path = True
-        logger.info(f"Using custom dataset path: {config.dataset_path}")
-    
-    # 配置是否合并增强数据
-    if hasattr(args, 'merge_augmented') and hasattr(args, 'no_merge_augmented'):
-        if args.merge_augmented and args.no_merge_augmented:
-            logger.warning("Both --merge-augmented and --no-merge-augmented specified, using --merge-augmented")
-            config.merge_augmented_data = True
-        elif args.merge_augmented:
-            config.merge_augmented_data = True
-            logger.info("Will merge augmented data with original training data")
-        elif args.no_merge_augmented:
-            config.merge_augmented_data = False
-            logger.info("Will not merge augmented data with original training data")
-    
-    # Optimizer options
-    if hasattr(args, 'optimizer') and args.optimizer:
-        config.optimizer = args.optimizer
-        logger.info(f"Setting optimizer to {config.optimizer}")
-    
-    if hasattr(args, 'weight_decay') and args.weight_decay:
-        config.weight_decay = args.weight_decay
-        logger.info(f"Setting weight decay to {config.weight_decay}")
-    
-    if hasattr(args, 'no_lookahead') and args.no_lookahead:
-        config.use_lookahead = False
-        logger.info("Disabling Lookahead optimizer wrapper")
-    
-    # Learning rate scheduler options
-    if hasattr(args, 'scheduler') and args.scheduler:
-        config.scheduler = args.scheduler
-        logger.info(f"Setting LR scheduler to {config.scheduler}")
-    
-    if hasattr(args, 'warmup_epochs') and args.warmup_epochs:
-        config.warmup_epochs = args.warmup_epochs
-        logger.info(f"Setting warmup epochs to {config.warmup_epochs}")
-    
-    if hasattr(args, 'warmup_factor') and args.warmup_factor:
-        config.warmup_factor = args.warmup_factor
-        logger.info(f"Setting warmup factor to {config.warmup_factor}")
-    
-    # Mixup and CutMix options
-    if hasattr(args, 'no_mixup') and args.no_mixup:
-        config.use_mixup = False
-        logger.info("Disabling Mixup data augmentation")
-    
-    if hasattr(args, 'mixup_alpha') and args.mixup_alpha:
-        config.mixup_alpha = args.mixup_alpha
-        logger.info(f"Setting Mixup alpha to {config.mixup_alpha}")
-    
-    if hasattr(args, 'cutmix_prob') and args.cutmix_prob:
-        config.cutmix_prob = args.cutmix_prob
-        logger.info(f"Setting CutMix probability to {config.cutmix_prob}")
-    
-    if hasattr(args, 'no_random_erasing') and args.no_random_erasing:
-        config.use_random_erasing = False
-        logger.info("Disabling random erasing augmentation")
-    
-    # Early stopping parameters
-    if hasattr(args, 'no_early_stopping') and args.no_early_stopping:
-        config.use_early_stopping = False
-        logger.info("Disabling early stopping")
-    
-    if hasattr(args, 'patience') and args.patience:
-        config.early_stopping_patience = args.patience
-        logger.info(f"Setting early stopping patience to {config.early_stopping_patience}")
-    
-    # Mixed precision options
-    if hasattr(args, 'no_amp') and args.no_amp:
-        config.use_amp = False
-        logger.info("Disabling automatic mixed precision training")
-    
-    # Gradient clipping options
-    if hasattr(args, 'gradient_clip_val') and args.gradient_clip_val:
-        config.gradient_clip_val = args.gradient_clip_val
-        logger.info(f"Setting gradient clipping value to {config.gradient_clip_val}")
-    
-    # EMA options
-    if hasattr(args, 'no_ema') and args.no_ema:
-        config.use_ema = False
-        logger.info("Disabling Exponential Moving Average (EMA)")
-    
-    if hasattr(args, 'ema_decay') and args.ema_decay:
-        config.ema_decay = args.ema_decay
-        logger.info(f"Setting EMA decay rate to {config.ema_decay}")
-    
-    # Device options
-    if hasattr(args, 'device') and args.device:
-        config.device = args.device
-        logger.info(f"Setting device to {config.device}")
-    
-    if hasattr(args, 'gpus') and args.gpus:
-        config.gpus = args.gpus
-        logger.info(f"Setting GPUs to {config.gpus}")
-    
-    # Advanced options
-    if hasattr(args, 'seed') and args.seed:
-        config.seed = args.seed
-        logger.info(f"Setting random seed to {config.seed}")
-    
-    if hasattr(args, 'label_smoothing') and args.label_smoothing:
-        config.label_smoothing = args.label_smoothing
-        logger.info(f"Setting label smoothing to {config.label_smoothing}")
-    
-    if hasattr(args, 'no_gradient_checkpointing') and args.no_gradient_checkpointing:
-        config.use_gradient_checkpointing = False
-        logger.info("Disabling gradient checkpointing")
+    apply_train_overrides(args)
         
     # 训练模型
-    from libs.training import train_model
-    train_model(config)
+    try:
+        train_model = load_train_function()
+    except ModuleNotFoundError:
+        return
+
+    train_model(config, force_train=getattr(args, 'force_train', False))
     
     # 训练完成后，如果参数中指定了清理临时文件，则执行清理
     if getattr(args, 'cleanup', False):
@@ -584,12 +804,7 @@ def run_inference(args) -> None:
     is_default_test_input = normalize_for_compare(input_path) in default_test_paths
 
     is_existing_dir = os.path.isdir(input_path)
-    existing_images = []
-    if is_existing_dir:
-        existing_images = [
-            f for f in os.listdir(input_path)
-            if f.lower().endswith(('.jpg', '.jpeg', '.png'))
-        ]
+    existing_images = list_image_files(input_path) if is_existing_dir else []
     input_missing_or_empty = (not os.path.exists(input_path)) or (is_existing_dir and len(existing_images) == 0)
         
     # 获取输入路径，可以是单个图像或目录
@@ -602,233 +817,63 @@ def run_inference(args) -> None:
         # 检查是否是测试目录
         if is_default_test_input:
             logger.info("Test data preparation needed")
-            
-            # 直接使用DataPreparation类来处理测试数据
-            from dataset.data_prep import DataPreparation
-            data_prep = DataPreparation()
-            
-            # 设置测试集合并标志
-            config.merge_test_datasets = True
-            logger.info("Test dataset merging enabled")
-            
-            # 获取data目录下所有包含test的zip文件
-            data_dir = normalize_path(paths.data_dir)
-            test_files = []
-            for ext in config.supported_dataset_formats:
-                test_files.extend(glob.glob(os.path.join(data_dir, f"*test*{ext}")))
-                test_files.extend(glob.glob(os.path.join(data_dir, f"*TEST*{ext}")))
-                test_files.extend(glob.glob(os.path.join(data_dir, "**", f"*test*{ext}")))
-                test_files.extend(glob.glob(os.path.join(data_dir, "**", f"*TEST*{ext}")))
-            
-            if test_files:
-                logger.info(f"Found the following test dataset files: {test_files}")
-                
-                # 确保测试解压目录存在
-                extract_to = normalize_path(os.path.join(paths.temp_dataset_dir, "AgriculturalDisease_testset"))
-                os.makedirs(extract_to, exist_ok=True)
-                
-                # 解压所有测试数据集文件
-                for test_file in test_files:
-                    logger.info(f"Extracting test dataset file: {test_file}")
-                    if data_prep.extract_zip_file(test_file, extract_to):
-                        logger.info(f"Successfully extracted {test_file}")
-                    else:
-                        logger.error(f"Failed to extract {test_file}")
-                
-                # 确保测试目录存在
-                os.makedirs(paths.test_images_dir, exist_ok=True)
-                
-                # 查找所有可能的测试图像目录
-                potential_image_dirs = []
-                potential_image_dirs_abs = []  # 存储绝对路径，用于检查
-                
-                # 1. 直接检查标准images目录
-                standard_images_dir = normalize_path(os.path.join(extract_to, "images"))
-                if os.path.exists(standard_images_dir) and os.path.isdir(standard_images_dir):
-                    potential_image_dirs.append(standard_images_dir)
-                    potential_image_dirs_abs.append(os.path.abspath(standard_images_dir))
-                
-                # 2. 检查可能的测试A/B子目录中的images
-                test_subdirs = glob.glob(os.path.join(extract_to, "AgriculturalDisease_test*"))
-                for subdir in test_subdirs:
-                    subdir_images = os.path.join(subdir, "images")
-                    if os.path.exists(subdir_images) and os.path.isdir(subdir_images):
-                        potential_image_dirs.append(subdir_images)
-                        potential_image_dirs_abs.append(os.path.abspath(subdir_images))
-                
-                # 3. 递归搜索其他可能包含图像的目录
-                for root, dirs, files in os.walk(extract_to):
-                    root_abs = os.path.abspath(root)
-                    # 检查当前目录是否已经在潜在图像目录列表中或是其子目录
-                    already_included = False
-                    for dir_abs in potential_image_dirs_abs:
-                        if root_abs == dir_abs or root_abs.startswith(dir_abs + os.sep):
-                            already_included = True
-                            break
-                    
-                    if not already_included:
-                        image_files = [f for f in files if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
-                        if image_files and os.path.basename(root) != "labels":
-                            potential_image_dirs.append(root)
-                            potential_image_dirs_abs.append(root_abs)
-                
-                if potential_image_dirs:
-                    logger.info(f"Found the following test image directories: {potential_image_dirs}")
-                    
-                    # 复制所有测试图像到测试目录
-                    copied_count = 0
-                    for image_dir in potential_image_dirs:
-                        count = data_prep.copy_files_to_folder(
-                            image_dir, 
-                            paths.test_images_dir, 
-                            file_pattern="*.jpg"
-                        )
-                        count += data_prep.copy_files_to_folder(
-                            image_dir, 
-                            paths.test_images_dir, 
-                            file_pattern="*.png"
-                        )
-                        count += data_prep.copy_files_to_folder(
-                            image_dir,
-                            paths.test_images_dir,
-                            file_pattern="*.jpeg"
-                        )
-                        count += data_prep.copy_files_to_folder(
-                            image_dir,
-                            paths.test_images_dir,
-                            file_pattern="*.JPEG"
-                        )
-                        copied_count += count
-                        logger.info(f"Copied {count} image files from {image_dir} to {paths.test_images_dir}")
-                    
-                    if copied_count > 0:
-                        logger.info(f"Successfully prepared test data: copied {copied_count} image files in total")
-                        logger.info("Cleaning up temporary test data files...")
-                        data_prep.cleanup_temp_files(force=True)
-                    else:
-                        logger.warning(f"Could not find any test image files")
-                else:
-                    logger.error("No test image directory found in the extracted directory")
-            else:
-                # 尝试使用标准方法查找测试数据集
-                logger.info("Trying to find test dataset files with specific names")
-                test_file = data_prep.find_dataset_file(
-                    config.test_name_pattern,
-                    getattr(args, 'dataset_path', None) if config.use_custom_dataset_path else None
-                )
-                
-                if test_file:
-                    logger.info(f"Found test dataset file: {test_file}")
-                    extract_to = normalize_path(os.path.join(paths.temp_dataset_dir, "AgriculturalDisease_testset"))
-                    os.makedirs(extract_to, exist_ok=True)
-                    
-                    if data_prep.extract_zip_file(test_file, extract_to):
-                        # 确保测试目录存在
-                        os.makedirs(paths.test_images_dir, exist_ok=True)
-                        
-                        # 查找所有可能的测试图像目录
-                        potential_image_dirs = []
-                        potential_image_dirs_abs = []  # 存储绝对路径，用于检查
-                        
-                        # 1. 检查多种可能的图像目录路径
-                        possible_paths = [
-                            normalize_path(os.path.join(extract_to, "images")),
-                            normalize_path(os.path.join(extract_to, "AgriculturalDisease_testA", "images")),
-                            normalize_path(os.path.join(extract_to, "AgriculturalDisease_testB", "images"))
-                        ]
-                        
-                        for path in possible_paths:
-                            if os.path.exists(path) and os.path.isdir(path):
-                                potential_image_dirs.append(path)
-                                potential_image_dirs_abs.append(os.path.abspath(path))
-                        
-                        # 2. 递归搜索其他可能包含图像的目录
-                        for root, dirs, files in os.walk(extract_to):
-                            root_abs = os.path.abspath(root)
-                            # 检查当前目录是否已经在潜在图像目录列表中或是其子目录
-                            already_included = False
-                            for dir_abs in potential_image_dirs_abs:
-                                if root_abs == dir_abs or root_abs.startswith(dir_abs + os.sep):
-                                    already_included = True
-                                    break
-                            
-                            if not already_included:
-                                image_files = [f for f in files if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
-                                if image_files and os.path.basename(root) != "labels":
-                                    potential_image_dirs.append(root)
-                                    potential_image_dirs_abs.append(root_abs)
-                        
-                        if potential_image_dirs:
-                            logger.info(f"Found the following test image directories: {potential_image_dirs}")
-                            
-                            # 复制所有测试图像到测试目录
-                            copied_count = 0
-                            for image_dir in potential_image_dirs:
-                                count = data_prep.copy_files_to_folder(
-                                    image_dir, 
-                                    paths.test_images_dir, 
-                                    file_pattern="*.jpg"
-                                )
-                                count += data_prep.copy_files_to_folder(
-                                    image_dir, 
-                                    paths.test_images_dir, 
-                                    file_pattern="*.png"
-                                )
-                                count += data_prep.copy_files_to_folder(
-                                    image_dir,
-                                    paths.test_images_dir,
-                                    file_pattern="*.jpeg"
-                                )
-                                count += data_prep.copy_files_to_folder(
-                                    image_dir,
-                                    paths.test_images_dir,
-                                    file_pattern="*.JPEG"
-                                )
-                                copied_count += count
-                                logger.info(f"Copied {count} image files from {image_dir} to {paths.test_images_dir}")
-                            
-                            if copied_count > 0:
-                                logger.info(f"Successfully prepared test data: copied {copied_count} image files in total")
-                                logger.info("Cleaning up temporary test data files...")
-                                data_prep.cleanup_temp_files(force=True)
-                            else:
-                                logger.warning(f"Could not find any test image files")
-                        else:
-                            logger.error(f"No test image directory found in the extracted directory")
-                    else:
-                        logger.error(f"Unable to extract test dataset file: {test_file}")
-                        return
-                else:
-                    logger.error("Could not find any test dataset files")
-                    return
-            
-            # 再次检查输入路径
-            prepared_images = []
-            if os.path.exists(input_path) and os.path.isdir(input_path):
-                prepared_images = [
-                    f for f in os.listdir(input_path)
-                    if f.lower().endswith(('.jpg', '.jpeg', '.png'))
-                ]
+            prepared = prepare_test_data(
+                custom_dataset_path=getattr(args, 'dataset_path', None) if config.use_custom_dataset_path else None
+            )
+            if prepared:
+                logger.info(f"Successfully prepared test data: {input_path}")
 
+            prepared_images = list_image_files(input_path) if os.path.isdir(input_path) else []
             if (not os.path.exists(input_path)) or (os.path.isdir(input_path) and not prepared_images):
                 logger.error(f"Even after attempting to prepare test data, no valid input images found at: {input_path}")
                 return
-            else:
-                logger.info(f"Successfully prepared test data: {input_path}")
         else:
             logger.error("Input path is missing/empty and is not a default test directory")
             return
     
+    try:
+        predict = load_predict_function()
+    except ModuleNotFoundError:
+        return
+
     # 设置输出文件路径
     output_path = args.output if args.output else paths.prediction_file
     
+    device = None if getattr(args, 'device', None) in (None, 'auto') else args.device
+
     # 检查输入是文件还是目录
+    model_name = getattr(args, 'model_name', None)
+
     if os.path.isfile(input_path):
         logger.info(f"Running inference on single image: {input_path}")
-        results = predict(model_path, input_path, output_path)
+        results = predict(
+            model_path,
+            input_path,
+            output_path,
+            is_dir=False,
+            device=device,
+            model_name=model_name,
+            topk=getattr(args, 'topk', 3),
+            save_probs=getattr(args, 'save_probs', False),
+            output_format=getattr(args, 'output_format', 'submit'),
+            confidence_threshold=getattr(args, 'confidence_threshold', None),
+        )
     else:
         logger.info(f"Running inference on directory: {input_path}")
-        results = predict(model_path, input_path, output_path, is_dir=True)
+        results = predict(
+            model_path,
+            input_path,
+            output_path,
+            is_dir=True,
+            device=device,
+            model_name=model_name,
+            batch_size=getattr(args, 'batch_size', None),
+            num_workers=getattr(args, 'num_workers', None),
+            topk=getattr(args, 'topk', 3),
+            save_probs=getattr(args, 'save_probs', False),
+            output_format=getattr(args, 'output_format', 'submit'),
+            confidence_threshold=getattr(args, 'confidence_threshold', None),
+        )
     
     # 保存预测结果
     if results:
@@ -836,9 +881,50 @@ def run_inference(args) -> None:
     else:
         logger.error("Inference failed or no results generated")
 
+def run_evaluation(args) -> None:
+    """执行模型评估"""
+    from libs.evaluation import evaluate_model
+
+    device = None if getattr(args, 'device', None) in (None, 'auto') else args.device
+    try:
+        summary = evaluate_model(
+            model_path=getattr(args, 'model', None),
+            data_dir=getattr(args, 'data', None),
+            batch_size=getattr(args, 'batch_size', None),
+            num_workers=getattr(args, 'num_workers', None),
+            device=device,
+            topk=getattr(args, 'topk', 2),
+            output_dir=getattr(args, 'output_dir', None),
+            save_confusion=not getattr(args, 'no_confusion', False),
+            save_report=not getattr(args, 'no_report', False),
+        )
+        logger.info(f"Evaluation summary: {summary}")
+    except Exception as exc:
+        logger.error(f"Evaluation failed: {exc}")
+
+def run_stats(args) -> None:
+    """执行数据集统计"""
+    from dataset.stats import summarize_dataset
+    from utils.utils import handle_datasets
+
+    data_path = getattr(args, 'data', None) or handle_datasets(data_type="train")
+    try:
+        summary = summarize_dataset(
+            data_path,
+            output_file=getattr(args, 'output', None),
+            top_n=getattr(args, 'top', 10),
+        )
+        logger.info(f"Dataset stats: {summary}")
+    except Exception as exc:
+        logger.error(f"Stats failed: {exc}")
+
 def main():
     """主函数"""
     args = setup_parser().parse_args()
+
+    if getattr(args, "version", False):
+        print_version_info(simple=True)
+        return
     
     # 处理未指定命令的情况
     if args.command is None:
@@ -847,9 +933,6 @@ def main():
         # 1. 数据准备
         logger.info("Step 1: Data preparation")
         
-        # 检查现有数据
-        from dataset.data_prep import DataPreparation
-        data_prep = DataPreparation()
         # 检查是否需要准备数据
         need_data_preparation = True
         
@@ -886,111 +969,7 @@ def main():
             prepare_data(prepare_args)
         elif need_test_data:
             logger.info("Preparing test data only")
-            
-            # 设置测试集合并标志
-            config.merge_test_datasets = True
-            logger.info("Test dataset merging enabled")
-            
-            # 获取data目录下所有包含test的zip文件
-            data_dir = normalize_path(paths.data_dir)
-            test_files = []
-            for ext in config.supported_dataset_formats:
-                test_files.extend(glob.glob(os.path.join(data_dir, f"*test*{ext}")))
-                test_files.extend(glob.glob(os.path.join(data_dir, f"*TEST*{ext}")))
-                test_files.extend(glob.glob(os.path.join(data_dir, "**", f"*test*{ext}")))
-                test_files.extend(glob.glob(os.path.join(data_dir, "**", f"*TEST*{ext}")))
-            
-            if test_files:
-                logger.info(f"Found the following test dataset files: {test_files}")
-                
-                # 确保测试解压目录存在
-                extract_to = normalize_path(os.path.join(paths.temp_dataset_dir, "AgriculturalDisease_testset"))
-                os.makedirs(extract_to, exist_ok=True)
-                
-                # 解压所有测试数据集文件
-                for test_file in test_files:
-                    logger.info(f"Extracting test dataset file: {test_file}")
-                    if data_prep.extract_zip_file(test_file, extract_to):
-                        logger.info(f"Successfully extracted {test_file}")
-                    else:
-                        logger.error(f"Failed to extract {test_file}")
-                
-                # 确保测试目录存在
-                os.makedirs(paths.test_images_dir, exist_ok=True)
-                
-                # 查找所有可能的测试图像目录
-                potential_image_dirs = []
-                potential_image_dirs_abs = []  # 存储绝对路径，用于检查
-                
-                # 1. 直接检查标准images目录
-                standard_images_dir = normalize_path(os.path.join(extract_to, "images"))
-                if os.path.exists(standard_images_dir) and os.path.isdir(standard_images_dir):
-                    potential_image_dirs.append(standard_images_dir)
-                    potential_image_dirs_abs.append(os.path.abspath(standard_images_dir))
-                
-                # 2. 检查可能的测试A/B子目录中的images
-                test_subdirs = glob.glob(os.path.join(extract_to, "AgriculturalDisease_test*"))
-                for subdir in test_subdirs:
-                    subdir_images = os.path.join(subdir, "images")
-                    if os.path.exists(subdir_images) and os.path.isdir(subdir_images):
-                        potential_image_dirs.append(subdir_images)
-                        potential_image_dirs_abs.append(os.path.abspath(subdir_images))
-                
-                # 3. 递归搜索其他可能包含图像的目录
-                for root, dirs, files in os.walk(extract_to):
-                    root_abs = os.path.abspath(root)
-                    # 检查当前目录是否已经在潜在图像目录列表中或是其子目录
-                    already_included = False
-                    for dir_abs in potential_image_dirs_abs:
-                        if root_abs == dir_abs or root_abs.startswith(dir_abs + os.sep):
-                            already_included = True
-                            break
-                    
-                    if not already_included:
-                        image_files = [f for f in files if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
-                        if image_files and os.path.basename(root) != "labels":
-                            potential_image_dirs.append(root)
-                            potential_image_dirs_abs.append(root_abs)
-                
-                if potential_image_dirs:
-                    logger.info(f"Found the following test image directories: {potential_image_dirs}")
-                    
-                    # 复制所有测试图像到测试目录
-                    copied_count = 0
-                    for image_dir in potential_image_dirs:
-                        count = data_prep.copy_files_to_folder(
-                            image_dir, 
-                            paths.test_images_dir, 
-                            file_pattern="*.jpg"
-                        )
-                        count += data_prep.copy_files_to_folder(
-                            image_dir, 
-                            paths.test_images_dir, 
-                            file_pattern="*.png"
-                        )
-                        count += data_prep.copy_files_to_folder(
-                            image_dir,
-                            paths.test_images_dir,
-                            file_pattern="*.jpeg"
-                        )
-                        count += data_prep.copy_files_to_folder(
-                            image_dir,
-                            paths.test_images_dir,
-                            file_pattern="*.JPEG"
-                        )
-                        copied_count += count
-                        logger.info(f"Copied {count} image files from {image_dir} to {paths.test_images_dir}")
-                    
-                    if copied_count > 0:
-                        logger.info(f"Successfully prepared test data: copied {copied_count} image files in total")
-                        logger.info("Cleaning up temporary test data files...")
-                        data_prep.cleanup_temp_files(force=True)
-                    else:
-                        logger.warning(f"Could not find any test image files")
-                else:
-                    logger.error("No test image directory found in the extracted directory")
-            else:
-                logger.error("Could not find any test dataset files")
+            prepare_test_data()
         else:
             logger.info("All data already exists, skipping data preparation")
         
@@ -1048,7 +1027,11 @@ def main():
             model=best_model_path,
             input=paths.test_images_dir,
             output=paths.prediction_file,
-            merge=True  # 确保测试集合并设置正确
+            merge=True,  # 确保测试集合并设置正确
+            output_format="submit",
+            topk=3,
+            save_probs=False,
+            confidence_threshold=None
         )
         run_inference(predict_args)
         
@@ -1068,6 +1051,27 @@ def main():
             logger.info("Test dataset merging enabled")
             config.merge_test_datasets = True
         run_inference(args)
+    elif args.command == "evaluate":
+        run_evaluation(args)
+    elif args.command == "stats":
+        run_stats(args)
+    elif args.command == "version":
+        print_version_info(simple=getattr(args, "simple", False))
+    elif args.command == "config":
+        payload = export_config(
+            output_path=getattr(args, "output", None),
+            pretty=not getattr(args, "compact", False),
+        )
+        if not getattr(args, "output", None):
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+    elif args.command == "models":
+        from models.model import get_available_models
+
+        models = sorted(get_available_models())
+        if getattr(args, "json", False):
+            print(json.dumps(models, ensure_ascii=False, indent=2))
+        else:
+            print("\n".join(models))
     else:
         logger.error(f"Unknown command: {args.command}")
         sys.exit(1)
