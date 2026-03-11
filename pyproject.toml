@@ -3,7 +3,7 @@ name = "plants-disease-detection"
 version = "0.1.0"
 description = "Plants Disease Detection - Deep learning-based plant disease classification system"
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.13,<3.14"
 dependencies = [
     # Core PyTorch requirements
     "torch>=1.10.0",

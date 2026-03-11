@@ -69,6 +69,7 @@ class Trainer:
         # 添加handler
         logger.addHandler(file_handler)
         logger.addHandler(console_handler)
+        logger.propagate = False
         
         # 设置日志级别
         logger.setLevel(logging.DEBUG)
@@ -82,8 +83,14 @@ class Trainer:
         torch.manual_seed(self.config.seed)
         torch.cuda.manual_seed_all(self.config.seed)
         os.environ["CUDA_VISIBLE_DEVICES"] = self.config.gpus
-        os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
-        os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
+        if self.config.cuda_alloc_conf:
+            os.environ["PYTORCH_CUDA_ALLOC_CONF"] = self.config.cuda_alloc_conf
+        else:
+            os.environ.pop("PYTORCH_CUDA_ALLOC_CONF", None)
+        if self.config.cuda_launch_blocking:
+            os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
+        else:
+            os.environ.pop("CUDA_LAUNCH_BLOCKING", None)
         torch.backends.cudnn.benchmark = True
         warnings.filterwarnings('ignore')
 
@@ -340,12 +347,14 @@ class Trainer:
             torch.cuda.empty_cache()
         
         # Update performance metrics
+        avg_batch_time = float(np.mean(batch_times)) if batch_times else 0.0
+
         self.performance_metrics.update_epoch_metrics(
             epoch=epoch,
             loss=train_losses.avg,
             top1=train_top1.avg,
             top2=train_top2.avg,
-            batch_time=np.mean(batch_times),
+            batch_time=avg_batch_time,
             memory_usage=self.memory_tracker.get_current_usage()
         )
         
@@ -390,7 +399,20 @@ class Trainer:
         self.logger.info(f"Validation dataset contains {len(val_files)} images")
         
         # 创建数据集和数据加载器
-        val_dataset = PlantDiseaseDataset(val_files, sampling_threshold=config.sampling_threshold)
+        val_dataset = PlantDiseaseDataset(
+            val_files,
+            sampling_threshold=self.config.sampling_threshold,
+            sample_size=self.config.sample_size,
+            seed=self.config.seed,
+            img_weight=self.config.img_weight,
+            img_height=self.config.img_height,
+            use_data_aug=False,
+            train=False,
+            test=False,
+            enable_sampling=self.config.enable_sampling,
+            validate_images=self.config.enable_image_validation,
+            validation_workers=self.config.image_validation_workers,
+        )
         return DataLoader(
             val_dataset, 
             batch_size=self.config.val_batch_size,
@@ -400,13 +422,14 @@ class Trainer:
             collate_fn=collate_fn
         )
 
-    def train(self, epochs=None, train_loader=None, val_loader=None):
+    def train(self, epochs=None, train_loader=None, val_loader=None, force_train: bool = False):
         """完整的训练循环，包含验证
         
         参数:
             epochs: 轮次数（默认使用config.epoch）
             train_loader: 训练数据加载器（如果为None则创建）
             val_loader: 验证数据加载器（如果为None则创建）
+            force_train: 是否忽略已有模型并强制从头训练
             
         返回:
             包含训练结果的字典
@@ -426,7 +449,7 @@ class Trainer:
         checkpoint_path = os.path.join(self.config.weights, self.config.model_name, "0", "_latest_model.pth.tar")
         best_model_path = os.path.join(self.config.best_weights, self.config.model_name, "0", "best_model.pth.tar")
         
-        if os.path.exists(checkpoint_path) or os.path.exists(best_model_path):
+        if not force_train and (os.path.exists(checkpoint_path) or os.path.exists(best_model_path)):
             model_path = best_model_path if os.path.exists(best_model_path) else checkpoint_path
             try:
                 checkpoint = torch.load(model_path, map_location=self.device)
@@ -441,9 +464,15 @@ class Trainer:
             except Exception as e:
                 self.logger.warning(f"Error loading existing checkpoint: {str(e)}. Starting from epoch 0.")
                 start_epoch = 0
+        elif force_train:
+            self.logger.info("Force training enabled: ignoring existing checkpoints and starting from epoch 0.")
         
         # Setup for training
-        model = get_net(model_name=config.model_name, num_classes=config.num_classes, pretrained=config.pretrained)
+        model = get_net(
+            model_name=self.config.model_name,
+            num_classes=self.config.num_classes,
+            pretrained=self.config.pretrained,
+        )
         
         # Load weights if we're continuing training
         if start_epoch > 0:
@@ -474,8 +503,8 @@ class Trainer:
         self.logger.info("Training started")
         
         # Get loss function and optimizer
-        criterion = get_loss_function(self.device)
-        optimizer = get_optimizer(model, self.config.optimizer)
+        criterion = get_loss_function(self.device, self.config)
+        optimizer = get_optimizer(model, self.config.optimizer, cfg=self.config)
         
         # Restore optimizer state if continuing training
         if start_epoch > 0 and 'optimizer_state' in locals():
@@ -486,7 +515,7 @@ class Trainer:
                 self.logger.warning(f"Failed to restore optimizer state: {str(e)}")
         
         # Set up learning rate scheduler
-        scheduler = get_scheduler(optimizer, epochs, len(train_loader))
+        scheduler = get_scheduler(optimizer, epochs, len(train_loader), cfg=self.config)
         
         # Initialize mixed precision training
         scaler = None
@@ -634,7 +663,18 @@ class Trainer:
         self.logger.info(f"Training dataset contains {len(train_files)} images")
         
         # 创建数据集和数据加载器
-        train_dataset = PlantDiseaseDataset(train_files, sampling_threshold=config.sampling_threshold)
+        train_dataset = PlantDiseaseDataset(
+            train_files,
+            sampling_threshold=self.config.sampling_threshold,
+            sample_size=self.config.sample_size,
+            seed=self.config.seed,
+            img_weight=self.config.img_weight,
+            img_height=self.config.img_height,
+            use_data_aug=self.config.use_data_aug,
+            enable_sampling=self.config.enable_sampling,
+            validate_images=self.config.enable_image_validation,
+            validation_workers=self.config.image_validation_workers,
+        )
         return DataLoader(
             train_dataset, 
             batch_size=self.config.train_batch_size,
@@ -748,11 +788,19 @@ class PerformanceMetrics:
         
     def get_summary(self) -> Dict[str, Any]:
         """获取性能指标摘要"""
+        if not self.metrics['top1']:
+            return {
+                'best_top1': 0.0,
+                'best_epoch': None,
+                'avg_batch_time': 0.0,
+                'peak_memory': 0.0
+            }
+
         return {
-            'best_top1': max(self.metrics['top1']),
-            'best_epoch': self.epochs[np.argmax(self.metrics['top1'])],
-            'avg_batch_time': np.mean(self.metrics['batch_time']),
-            'peak_memory': max(self.metrics['memory_usage'])
+            'best_top1': float(max(self.metrics['top1'])),
+            'best_epoch': int(self.epochs[np.argmax(self.metrics['top1'])]),
+            'avg_batch_time': float(np.mean(self.metrics['batch_time'])) if self.metrics['batch_time'] else 0.0,
+            'peak_memory': float(max(self.metrics['memory_usage'])) if self.metrics['memory_usage'] else 0.0
         }
 
 def init_logger(log_name='train_details.log') -> Logger:
@@ -771,11 +819,12 @@ def init_logger(log_name='train_details.log') -> Logger:
     log.open(os.path.join(paths.log_dir, log_name))
     return log
 
-def train_model(cfg=None):
+def train_model(cfg=None, force_train: bool = False):
     """使用给定配置训练模型
     
     参数:
         cfg: 可选配置对象（如果为None则使用默认配置）
+        force_train: 是否忽略已有模型并强制从头训练
         
     返回:
         包含训练结果的字典
@@ -783,7 +832,7 @@ def train_model(cfg=None):
     try:
         # Use provided config or default
         trainer = Trainer(cfg or config)
-        return trainer.train()
+        return trainer.train(force_train=force_train)
     except Exception as e:
         logging.error(f"Error in training: {str(e)}")
         return {"error": str(e)} 
