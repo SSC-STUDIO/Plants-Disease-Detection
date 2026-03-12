@@ -5,19 +5,19 @@ from typing import Dict, Any, List, Optional
 from config import config
 from utils.utils import get_image_extensions
 
-IMAGE_EXTENSIONS = get_image_extensions()
 
-
-def _list_images(root: str, recursive: bool = True) -> List[str]:
+def _list_images(root: str, recursive: bool = True, image_extensions: Optional[tuple] = None) -> List[str]:
     matches: List[str] = []
+    if image_extensions is None:
+        image_extensions = get_image_extensions(cfg=config)
     if recursive:
         for dirpath, _, filenames in os.walk(root):
             for filename in filenames:
-                if filename.lower().endswith(IMAGE_EXTENSIONS):
+                if filename.lower().endswith(image_extensions):
                     matches.append(os.path.join(dirpath, filename))
     else:
         for filename in os.listdir(root):
-            if filename.lower().endswith(IMAGE_EXTENSIONS):
+            if filename.lower().endswith(image_extensions):
                 matches.append(os.path.join(root, filename))
     return matches
 
@@ -27,12 +27,15 @@ def summarize_dataset(
     num_classes: Optional[int] = None,
     output_file: Optional[str] = None,
     top_n: int = 10,
+    cfg=None,
 ) -> Dict[str, Any]:
     """统计数据集结构与类别分布"""
     if not os.path.exists(data_path):
         raise FileNotFoundError(f"Dataset path not found: {data_path}")
 
-    num_classes = num_classes or config.num_classes
+    cfg = cfg or config
+    image_extensions = get_image_extensions(cfg=cfg)
+    num_classes = num_classes or cfg.num_classes
     class_dirs = [
         d for d in os.listdir(data_path)
         if os.path.isdir(os.path.join(data_path, d))
@@ -52,7 +55,7 @@ def summarize_dataset(
         for dir_name in labeled_dirs:
             class_id = int(dir_name)
             class_path = os.path.join(data_path, dir_name)
-            count = len(_list_images(class_path, recursive=True))
+            count = len(_list_images(class_path, recursive=True, image_extensions=image_extensions))
             class_counts[class_id] = count
 
         result["class_distribution"] = {
@@ -74,7 +77,7 @@ def summarize_dataset(
             top_classes = sorted(class_counts.items(), key=lambda item: item[1], reverse=True)[:top_n]
             result["top_classes"] = [{"class": k, "count": v} for k, v in top_classes]
     else:
-        images = _list_images(data_path, recursive=True)
+        images = _list_images(data_path, recursive=True, image_extensions=image_extensions)
         result["total_images"] = len(images)
 
     if output_file:

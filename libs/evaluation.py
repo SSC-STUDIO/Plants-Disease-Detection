@@ -10,18 +10,19 @@ import torch
 from torch.utils.data import DataLoader
 from sklearn.metrics import classification_report, confusion_matrix
 
-from config import config, paths
+from config import config, DefaultConfigs
 from dataset.dataloader import PlantDiseaseDataset, get_files
 from models.model import get_net
 from utils.utils import AverageMeter, accuracy, get_loss_function, handle_datasets
 
 
-def _setup_logger() -> logging.Logger:
+def _setup_logger(cfg: Optional[DefaultConfigs] = None) -> logging.Logger:
+    cfg = cfg or config
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         handlers=[
-            logging.FileHandler(os.path.join(paths.log_dir, "evaluation.log"), encoding="utf-8"),
+            logging.FileHandler(os.path.join(cfg.paths.log_dir, "evaluation.log"), encoding="utf-8"),
             logging.StreamHandler()
         ]
     )
@@ -38,11 +39,11 @@ def _resolve_device(device: Optional[str]) -> torch.device:
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-def _auto_model_path() -> str:
-    best_model_path = os.path.join(config.best_weights, config.model_name, "0", "best_model.pth.tar")
+def _auto_model_path(cfg: DefaultConfigs) -> str:
+    best_model_path = os.path.join(cfg.best_weights, cfg.model_name, "0", "best_model.pth.tar")
     if os.path.exists(best_model_path):
         return best_model_path
-    latest_model_path = os.path.join(config.weights, config.model_name, "0", "_latest_model.pth.tar")
+    latest_model_path = os.path.join(cfg.weights, cfg.model_name, "0", "_latest_model.pth.tar")
     if os.path.exists(latest_model_path):
         return latest_model_path
     raise FileNotFoundError("Could not find any model weights. Please provide --model.")
@@ -65,11 +66,16 @@ def _infer_model_name(model_path: str) -> Optional[str]:
     return None
 
 
-def _load_model(model_path: str, device: torch.device, model_name: Optional[str] = None) -> torch.nn.Module:
-    model_name = model_name or config.model_name
+def _load_model(
+    model_path: str,
+    device: torch.device,
+    model_name: Optional[str],
+    cfg: DefaultConfigs,
+) -> torch.nn.Module:
+    model_name = model_name or cfg.model_name
     model = get_net(
         model_name=model_name,
-        num_classes=config.num_classes,
+        num_classes=cfg.num_classes,
         pretrained=False,
     )
     checkpoint = torch.load(model_path, map_location=device)
@@ -101,15 +107,17 @@ def evaluate_model(
     output_dir: Optional[str] = None,
     save_confusion: bool = True,
     save_report: bool = True,
+    cfg: Optional[DefaultConfigs] = None,
 ) -> Dict[str, Any]:
     """评估模型并输出报告"""
-    logger = _setup_logger()
+    cfg = cfg or config
+    logger = _setup_logger(cfg)
 
-    model_path = model_path or _auto_model_path()
+    model_path = model_path or _auto_model_path(cfg)
     inferred_name = _infer_model_name(model_path)
-    model_name = model_name or inferred_name or config.model_name
+    model_name = model_name or inferred_name or cfg.model_name
     eval_device = _resolve_device(device)
-    output_dir = output_dir or paths.report_dir
+    output_dir = output_dir or cfg.paths.report_dir
 
     os.makedirs(output_dir, exist_ok=True)
     run_id = time.strftime("%Y%m%d_%H%M%S")
@@ -117,7 +125,7 @@ def evaluate_model(
     os.makedirs(run_dir, exist_ok=True)
 
     if data_dir is None:
-        data_dir = handle_datasets(data_type="val")
+        data_dir = handle_datasets(data_type="val", cfg=cfg)
 
     if not os.path.exists(data_dir):
         raise FileNotFoundError(f"Evaluation data directory not found: {data_dir}")
@@ -127,33 +135,33 @@ def evaluate_model(
     logger.info(f"Evaluation data: {data_dir}")
     logger.info(f"Device: {eval_device}")
 
-    model = _load_model(model_path, eval_device, model_name=model_name)
+    model = _load_model(model_path, eval_device, model_name=model_name, cfg=cfg)
 
     eval_files = get_files(data_dir, mode="val")
     eval_dataset = PlantDiseaseDataset(
         eval_files,
-        sampling_threshold=config.sampling_threshold,
-        sample_size=config.sample_size,
-        seed=config.seed,
-        img_weight=config.img_weight,
-        img_height=config.img_height,
+        sampling_threshold=cfg.sampling_threshold,
+        sample_size=cfg.sample_size,
+        seed=cfg.seed,
+        img_weight=cfg.img_weight,
+        img_height=cfg.img_height,
         use_data_aug=False,
         train=False,
         test=False,
         enable_sampling=False,
-        validate_images=config.enable_image_validation,
-        validation_workers=config.image_validation_workers,
+        validate_images=cfg.enable_image_validation,
+        validation_workers=cfg.image_validation_workers,
     )
     eval_loader = DataLoader(
         eval_dataset,
-        batch_size=batch_size or config.val_batch_size,
+        batch_size=batch_size or cfg.val_batch_size,
         shuffle=False,
-        num_workers=num_workers or config.num_workers,
+        num_workers=num_workers or cfg.num_workers,
         pin_memory=eval_device.type == "cuda",
         collate_fn=lambda batch: (torch.stack([x[0] for x in batch], 0), [x[1] for x in batch]),
     )
 
-    criterion = get_loss_function(eval_device, cfg=config)
+    criterion = get_loss_function(eval_device, cfg=cfg)
     loss_meter = AverageMeter()
     top1_meter = AverageMeter()
     topk_meter = AverageMeter()
@@ -204,7 +212,7 @@ def evaluate_model(
             json.dump(report, f, ensure_ascii=False, indent=2)
 
     if save_confusion:
-        labels = list(range(config.num_classes))
+        labels = list(range(cfg.num_classes))
         matrix = confusion_matrix(all_targets, all_preds, labels=labels)
         cm_path = os.path.join(run_dir, "confusion_matrix.csv")
         _write_confusion_matrix(cm_path, matrix, labels)

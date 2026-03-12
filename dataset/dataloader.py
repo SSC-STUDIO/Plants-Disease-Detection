@@ -39,11 +39,12 @@ if not logger.handlers:
     logger.addHandler(file_handler)
     logger.addHandler(console_handler)
 
-# 设置随机种子
-random.seed(config.seed)
-np.random.seed(config.seed)
-torch.manual_seed(config.seed)
-torch.cuda.manual_seed_all(config.seed)
+def seed_everything(cfg) -> None:
+    """设置随机种子，便于复现实验。"""
+    random.seed(cfg.seed)
+    np.random.seed(cfg.seed)
+    torch.manual_seed(cfg.seed)
+    torch.cuda.manual_seed_all(cfg.seed)
 
 class PlantDiseaseDataset(Dataset):
     """植物病害图像数据集类"""
@@ -51,17 +52,19 @@ class PlantDiseaseDataset(Dataset):
         self,
         label_list,
         sampling_threshold,
-        sample_size=config.sample_size,
-        seed=config.seed,
-        img_weight=config.img_weight,
-        img_height=config.img_height,
-        use_data_aug=config.use_data_aug,
+        sample_size=None,
+        seed=None,
+        img_weight=None,
+        img_height=None,
+        use_data_aug=None,
         transforms=None,
         train=True,
         test=False,
-        enable_sampling=config.enable_sampling,
+        enable_sampling=None,
         validate_images=None,
         validation_workers=None,
+        cfg=None,
+        seed_all: bool = True,
     ):
         """初始化数据集
         
@@ -71,18 +74,22 @@ class PlantDiseaseDataset(Dataset):
             train: 是否为训练模式
             test: 是否为测试模式
         """
+        self.config = cfg or config
+        if seed_all:
+            seed_everything(self.config)
+
         self.test = test 
         self.train = train 
-        self.enable_sampling = enable_sampling
+        self.enable_sampling = self.config.enable_sampling if enable_sampling is None else enable_sampling
         self.sampling_threshold = sampling_threshold
-        self.sample_size = sample_size
-        self.seed = seed
-        self.img_weight = img_weight
-        self.img_height = img_height
-        self.use_data_aug = use_data_aug
+        self.sample_size = self.config.sample_size if sample_size is None else sample_size
+        self.seed = self.config.seed if seed is None else seed
+        self.img_weight = self.config.img_weight if img_weight is None else img_weight
+        self.img_height = self.config.img_height if img_height is None else img_height
+        self.use_data_aug = self.config.use_data_aug if use_data_aug is None else use_data_aug
         self.transforms = self._get_transforms(transforms, train, test)
-        self.validate_images = config.enable_image_validation if validate_images is None else validate_images
-        self.validation_workers = validation_workers if validation_workers is not None else config.image_validation_workers
+        self.validate_images = self.config.enable_image_validation if validate_images is None else validate_images
+        self.validation_workers = validation_workers if validation_workers is not None else self.config.image_validation_workers
         self.imgs = self._load_images(label_list)
         
     def _load_images(self, label_list):
@@ -225,6 +232,7 @@ class PlantDiseaseDataset(Dataset):
             use_data_aug=self.use_data_aug,
             img_height=self.img_height,
             img_weight=self.img_weight,
+            cfg=self.config,
         )
 
     def __getitem__(self, index):
@@ -269,7 +277,7 @@ def collate_fn(batch):
     imgs, labels = zip(*batch)
     return torch.stack(imgs, 0), list(labels)
 
-def get_files(data_path, mode):
+def get_files(data_path, mode, cfg=None):
     """获取数据集文件路径和标签
     
     参数:
@@ -287,8 +295,10 @@ def get_files(data_path, mode):
     
     logger.info(f"Loading {mode} dataset from: {actual_root}")
     
+    cfg = cfg or config
+
     if mode == "test":
-        image_exts = get_image_extensions()
+        image_exts = get_image_extensions(cfg=cfg)
         files = [
             os.path.join(actual_root, img)
             for img in os.listdir(actual_root)
@@ -303,7 +313,7 @@ def get_files(data_path, mode):
                         if os.path.isdir(os.path.join(actual_root, x))]
         
         # 获取所有jpg和png图像路径
-        image_patterns = [f"/{pattern}" for pattern in get_image_glob_patterns()]
+        image_patterns = [f"/{pattern}" for pattern in get_image_glob_patterns(cfg=cfg)]
         all_images = []
         for folder in image_folders:
             for pattern in image_patterns:

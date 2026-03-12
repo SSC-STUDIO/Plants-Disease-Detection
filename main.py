@@ -150,10 +150,11 @@ def get_version_payload() -> Dict[str, Any]:
 
 def print_version_info(simple: bool = False) -> None:
     """输出版本信息到 stdout。"""
-    payload = get_version_payload()
     if simple:
-        print(f"{payload['project']} {payload['version']}")
+        version = get_project_version()
+        print(f"plants-disease-detection {version}")
         return
+    payload = get_version_payload()
     print(json.dumps(payload, ensure_ascii=False, indent=2))
 
 
@@ -195,11 +196,12 @@ def get_dataset_search_roots(custom_dataset_path: Optional[str]) -> List[str]:
     return dedupe_paths([root for root in roots if root])
 
 
-def find_test_archives(search_roots: List[str]) -> List[str]:
+def find_test_archives(search_roots: List[str], cfg=None) -> List[str]:
     """在给定根目录中查找测试集压缩包文件。"""
+    cfg = cfg or config
     test_files: List[str] = []
     for root in search_roots:
-        for ext in config.supported_dataset_formats:
+        for ext in cfg.supported_dataset_formats:
             test_files.extend(glob.glob(os.path.join(root, f"*test*{ext}")))
             test_files.extend(glob.glob(os.path.join(root, f"*TEST*{ext}")))
             test_files.extend(glob.glob(os.path.join(root, "**", f"*test*{ext}"), recursive=True))
@@ -263,18 +265,19 @@ def copy_test_images(data_prep, source_dirs: List[str], dest_dir: str) -> int:
     return copied_count
 
 
-def prepare_test_data(custom_dataset_path: Optional[str] = None) -> bool:
+def prepare_test_data(custom_dataset_path: Optional[str] = None, cfg=None) -> bool:
     """准备测试数据（解压与复制到测试目录）。"""
     from dataset.data_prep import DataPreparation
 
-    data_prep = DataPreparation()
-    config.merge_test_datasets = True
+    cfg = cfg or config
+    data_prep = DataPreparation(config_obj=cfg)
+    cfg.merge_test_datasets = True
     logger.info("Test dataset merging enabled")
 
     search_roots = get_dataset_search_roots(custom_dataset_path)
-    test_files = find_test_archives(search_roots)
+    test_files = find_test_archives(search_roots, cfg=cfg)
     if not test_files:
-        test_files = find_test_archives_by_pattern(search_roots, config.test_name_pattern)
+        test_files = find_test_archives_by_pattern(search_roots, cfg.test_name_pattern)
 
     if not test_files:
         logger.error("Could not find any test dataset files")
@@ -312,18 +315,19 @@ def prepare_test_data(custom_dataset_path: Optional[str] = None) -> bool:
     return False
 
 
-def apply_train_overrides(args: argparse.Namespace) -> None:
+def apply_train_overrides(args: argparse.Namespace, cfg=None) -> None:
     """根据命令行参数覆盖训练配置。"""
+    cfg = cfg or config
     def set_if_not_none(arg_name: str, config_attr: str, label: str) -> None:
         if hasattr(args, arg_name):
             value = getattr(args, arg_name)
             if value is not None and value != "":
-                setattr(config, config_attr, value)
+                setattr(cfg, config_attr, value)
                 logger.info(f"Setting {label} to {value}")
 
     def set_if_true(arg_name: str, config_attr: str, label: str) -> None:
         if getattr(args, arg_name, False):
-            setattr(config, config_attr, False)
+            setattr(cfg, config_attr, False)
             logger.info(label)
 
     def resolve_toggle(enable_attr: str, disable_attr: str, config_attr: str, enable_msg: str, disable_msg: str) -> None:
@@ -332,10 +336,10 @@ def apply_train_overrides(args: argparse.Namespace) -> None:
         if enable_flag and disable_flag:
             logger.warning(f"Both --{enable_attr.replace('_', '-')} and --{disable_attr.replace('_', '-')} specified, using --{enable_attr.replace('_', '-')}")
         if enable_flag:
-            setattr(config, config_attr, True)
+            setattr(cfg, config_attr, True)
             logger.info(enable_msg)
         elif disable_flag:
-            setattr(config, config_attr, False)
+            setattr(cfg, config_attr, False)
             logger.info(disable_msg)
 
     set_if_not_none('epochs', 'epoch', 'epochs')
@@ -344,9 +348,9 @@ def apply_train_overrides(args: argparse.Namespace) -> None:
     set_if_not_none('lr', 'lr', 'learning rate')
 
     if getattr(args, 'dataset_path', None):
-        config.dataset_path = args.dataset_path
-        config.use_custom_dataset_path = True
-        logger.info(f"Using custom dataset path: {config.dataset_path}")
+        cfg.dataset_path = args.dataset_path
+        cfg.use_custom_dataset_path = True
+        logger.info(f"Using custom dataset path: {cfg.dataset_path}")
 
     resolve_toggle(
         'enable_augmentation',
@@ -359,12 +363,12 @@ def apply_train_overrides(args: argparse.Namespace) -> None:
     if hasattr(args, 'merge_augmented') and hasattr(args, 'no_merge_augmented'):
         if args.merge_augmented and args.no_merge_augmented:
             logger.warning("Both --merge-augmented and --no-merge-augmented specified, using --merge-augmented")
-            config.merge_augmented_data = True
+            cfg.merge_augmented_data = True
         elif args.merge_augmented:
-            config.merge_augmented_data = True
+            cfg.merge_augmented_data = True
             logger.info("Will merge augmented data with original training data")
         elif args.no_merge_augmented:
-            config.merge_augmented_data = False
+            cfg.merge_augmented_data = False
             logger.info("Will not merge augmented data with original training data")
 
     set_if_not_none('optimizer', 'optimizer', 'optimizer')
@@ -455,9 +459,9 @@ def add_train_arguments(train_parser: argparse.ArgumentParser) -> None:
     train_parser.add_argument('--no-random-erasing', action='store_true',
                              help='Disable random erasing augmentation')
     train_parser.add_argument('--disable-augmentation', action='store_true',
-                             help='Disable all data augmentation (overrides config.use_data_aug)')
+                             help='Disable all data augmentation (overrides configured default)')
     train_parser.add_argument('--enable-augmentation', action='store_true',
-                             help='Enable all data augmentation (overrides config.use_data_aug)')
+                             help='Enable all data augmentation (overrides configured default)')
     
     # 早停参数
     train_parser.add_argument('--no-early-stopping', action='store_true',
@@ -535,9 +539,9 @@ def setup_parser() -> argparse.ArgumentParser:
     prep_parser.add_argument('--force-cleanup', action='store_true', 
                             help='Force cleanup without asking for confirmation')
     prep_parser.add_argument('--disable-augmentation', action='store_true',
-                            help='Disable data augmentation (overrides config.use_data_aug)')
+                            help='Disable data augmentation (overrides configured default)')
     prep_parser.add_argument('--enable-augmentation', action='store_true',
-                            help='Enable data augmentation (overrides config.use_data_aug)')
+                            help='Enable data augmentation (overrides configured default)')
     
     # 训练命令
     train_parser = subparsers.add_parser('train', 
@@ -551,7 +555,7 @@ def setup_parser() -> argparse.ArgumentParser:
     infer_parser.add_argument('--model', type=str, 
                              help=f'Path to model weights file (default: auto-detect best model)')
     infer_parser.add_argument('--model-name', type=str,
-                             help='Model architecture name (override config.model_name)')
+                             help='Model architecture name (override configured default)')
     infer_parser.add_argument('--input', type=str, 
                              help=f'Path to image folder or single image (default: {paths.test_images_dir})')
     infer_parser.add_argument('--output', type=str, 
@@ -577,7 +581,7 @@ def setup_parser() -> argparse.ArgumentParser:
     eval_parser.add_argument('--model', type=str,
                              help='Path to model weights file (default: auto-detect best model)')
     eval_parser.add_argument('--model-name', type=str,
-                             help='Model architecture name (override config.model_name)')
+                             help='Model architecture name (override configured default)')
     eval_parser.add_argument('--data', type=str,
                              help='Path to labeled dataset directory (default: auto-detect val set)')
     eval_parser.add_argument('--batch-size', type=int,
@@ -624,7 +628,7 @@ def setup_parser() -> argparse.ArgumentParser:
     
     return parser
 
-def prepare_data(args: argparse.Namespace) -> Dict[str, Any]:
+def prepare_data(args: argparse.Namespace, cfg=None) -> Dict[str, Any]:
     """运行数据准备流程
     
     参数:
@@ -634,6 +638,7 @@ def prepare_data(args: argparse.Namespace) -> Dict[str, Any]:
         数据准备结果字典
     """
     logger.info("Starting data preparation")
+    cfg = cfg or config
 
     # 延迟导入重依赖，避免轻量命令启动慢
     from dataset.data_prep import setup_data
@@ -666,14 +671,14 @@ def prepare_data(args: argparse.Namespace) -> Dict[str, Any]:
     if hasattr(args, 'enable_augmentation') and args.enable_augmentation:
         if hasattr(args, 'disable_augmentation') and args.disable_augmentation:
             logger.warning("Both --enable-augmentation and --disable-augmentation specified, using --enable-augmentation")
-        config.use_data_aug = True
+        cfg.use_data_aug = True
         logger.info("Data augmentation enabled for training")
     elif hasattr(args, 'disable_augmentation') and args.disable_augmentation:
-        config.use_data_aug = False
+        cfg.use_data_aug = False
         logger.info("Data augmentation explicitly disabled for training")
     else:
-        state = "enabled" if config.use_data_aug else "disabled"
-        logger.info(f"Data augmentation is {state} for training (config.use_data_aug={config.use_data_aug})")
+        state = "enabled" if cfg.use_data_aug else "disabled"
+        logger.info(f"Data augmentation is {state} for training (cfg.use_data_aug={cfg.use_data_aug})")
     
     # 获取清理临时文件的参数
     cleanup_temp = getattr(args, 'cleanup', False)
@@ -691,7 +696,8 @@ def prepare_data(args: argparse.Namespace) -> Dict[str, Any]:
         cleanup_temp=cleanup_temp,
         custom_dataset_path=custom_dataset_path,
         merge_augmented=merge_augmented,
-        force_cleanup=force_cleanup
+        force_cleanup=force_cleanup,
+        config_obj=cfg,
     )
     
     return result
@@ -728,17 +734,17 @@ def train_pipeline(args: argparse.Namespace) -> None:
             no_merge_augmented=getattr(args, 'no_merge_augmented', None),
             cleanup=True  # 启用清理临时文件
         )
-        prepare_data(prepare_args)
+        prepare_data(prepare_args, cfg=config)
     else:
         # 检查测试数据是否存在，不存在时仅处理测试数据
         test_images_path = normalize_path(paths.test_images_dir)
         if not has_image_files(test_images_path):
             logger.warning(f"Test image directory does not exist or is empty: {test_images_path}")
             logger.info("Preparing test data only")
-            prepare_test_data(custom_dataset_path=getattr(args, 'dataset_path', None))
+            prepare_test_data(custom_dataset_path=getattr(args, 'dataset_path', None), cfg=config)
     
     # 根据命令行参数覆盖配置
-    apply_train_overrides(args)
+    apply_train_overrides(args, cfg=config)
         
     # 训练模型
     try:
@@ -760,20 +766,21 @@ def train_pipeline(args: argparse.Namespace) -> None:
     elapsed_time = time.time() - start_time
     logger.info(f"Training pipeline completed in {elapsed_time:.2f} seconds")
 
-def run_inference(args) -> None:
+def run_inference(args, cfg=None) -> None:
     """执行模型推理
     
     参数:
         args: 命令行参数
     """
     logger.info("Starting inference")
+    cfg = cfg or config
     
     # 设置默认模型路径
     if not hasattr(args, 'model') or not args.model:
         # 自动查找最佳模型文件
-        best_model_path = os.path.join(config.best_weights, config.model_name, "0", "best_model.pth.tar")
+        best_model_path = os.path.join(cfg.best_weights, cfg.model_name, "0", "best_model.pth.tar")
         if not os.path.exists(best_model_path):
-            best_model_path = os.path.join(config.weights, config.model_name, "0", "_latest_model.pth.tar")
+            best_model_path = os.path.join(cfg.weights, cfg.model_name, "0", "_latest_model.pth.tar")
         
         if not os.path.exists(best_model_path):
             logger.error(f"Could not find model file. Please specify --model or ensure model exists at: {best_model_path}")
@@ -820,7 +827,8 @@ def run_inference(args) -> None:
         if is_default_test_input:
             logger.info("Test data preparation needed")
             prepared = prepare_test_data(
-                custom_dataset_path=getattr(args, 'dataset_path', None) if config.use_custom_dataset_path else None
+                custom_dataset_path=getattr(args, 'dataset_path', None) if cfg.use_custom_dataset_path else None,
+                cfg=cfg,
             )
             if prepared:
                 logger.info(f"Successfully prepared test data: {input_path}")
@@ -859,6 +867,7 @@ def run_inference(args) -> None:
             save_probs=getattr(args, 'save_probs', False),
             output_format=getattr(args, 'output_format', 'submit'),
             confidence_threshold=getattr(args, 'confidence_threshold', None),
+            cfg=cfg,
         )
     else:
         logger.info(f"Running inference on directory: {input_path}")
@@ -875,6 +884,7 @@ def run_inference(args) -> None:
             save_probs=getattr(args, 'save_probs', False),
             output_format=getattr(args, 'output_format', 'submit'),
             confidence_threshold=getattr(args, 'confidence_threshold', None),
+            cfg=cfg,
         )
     
     # 保存预测结果
@@ -899,6 +909,7 @@ def run_evaluation(args) -> None:
             output_dir=getattr(args, 'output_dir', None),
             save_confusion=not getattr(args, 'no_confusion', False),
             save_report=not getattr(args, 'no_report', False),
+            cfg=config,
         )
         logger.info(f"Evaluation summary: {summary}")
     except Exception as exc:
@@ -908,13 +919,14 @@ def run_stats(args) -> None:
     """执行数据集统计"""
     from dataset.stats import summarize_dataset
     from utils.utils import handle_datasets
-
-    data_path = getattr(args, 'data', None) or handle_datasets(data_type="train")
+    cfg = config
+    data_path = getattr(args, 'data', None) or handle_datasets(data_type="train", cfg=cfg)
     try:
         summary = summarize_dataset(
             data_path,
             output_file=getattr(args, 'output', None),
             top_n=getattr(args, 'top', 10),
+            cfg=cfg,
         )
         logger.info(f"Dataset stats: {summary}")
     except Exception as exc:
@@ -923,6 +935,7 @@ def run_stats(args) -> None:
 def main():
     """主函数"""
     args = setup_parser().parse_args()
+    cfg = config
 
     if getattr(args, "version", False):
         print_version_info(simple=True)
@@ -943,7 +956,7 @@ def main():
         if os.path.exists(train_path):
             train_files = sum(len(glob.glob(os.path.join(d, "*.*"))) 
                            for d in glob.glob(os.path.join(train_path, "*")) if os.path.isdir(d))
-            if train_files > config.min_files_threshold:
+            if train_files > cfg.min_files_threshold:
                 logger.info(f"Training data already exists ({train_files} files), skipping training data preparation")
                 need_data_preparation = False
         
@@ -968,10 +981,10 @@ def main():
                 merge_augmented=True,
                 no_merge_augmented=False
             )
-            prepare_data(prepare_args)
+            prepare_data(prepare_args, cfg=cfg)
         elif need_test_data:
             logger.info("Preparing test data only")
-            prepare_test_data()
+            prepare_test_data(cfg=cfg)
         else:
             logger.info("All data already exists, skipping data preparation")
         
@@ -1021,9 +1034,9 @@ def main():
         # 3. 模型推理
         logger.info("Step 3: Model inference")
         # 查找最佳模型文件
-        best_model_path = os.path.join(config.best_weights, config.model_name, "0", "best_model.pth.tar")
+        best_model_path = os.path.join(cfg.best_weights, cfg.model_name, "0", "best_model.pth.tar")
         if not os.path.exists(best_model_path):
-            best_model_path = os.path.join(config.weights, config.model_name, "0", "_latest_model.pth.tar")
+            best_model_path = os.path.join(cfg.weights, cfg.model_name, "0", "_latest_model.pth.tar")
         
         predict_args = argparse.Namespace(
             model=best_model_path,
@@ -1035,7 +1048,7 @@ def main():
             save_probs=False,
             confidence_threshold=None
         )
-        run_inference(predict_args)
+        run_inference(predict_args, cfg=cfg)
         
         logger.info("All operations completed successfully.")
         return
@@ -1043,7 +1056,7 @@ def main():
     logger.info(f"Running command: {args.command}")
     
     if args.command == "prepare":
-        prepare_data(args)
+        prepare_data(args, cfg=cfg)
     elif args.command == "train":
         train_pipeline(args)
     elif args.command == "predict":
@@ -1051,8 +1064,8 @@ def main():
         if not hasattr(args, 'merge') or not args.merge:
             # 默认启用测试集合并
             logger.info("Test dataset merging enabled")
-            config.merge_test_datasets = True
-        run_inference(args)
+            cfg.merge_test_datasets = True
+        run_inference(args, cfg=cfg)
     elif args.command == "evaluate":
         run_evaluation(args)
     elif args.command == "stats":

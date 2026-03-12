@@ -162,16 +162,17 @@ def setup_data(extract=False, process=False, augment=False, status=False,
     try:
         # 创建数据准备类的实例
         data_prep = DataPreparation(config_obj)
+        cfg = data_prep.config
         
         # 如果提供了自定义数据集路径，更新配置
         if custom_dataset_path:
-            config.dataset_path = custom_dataset_path
-            config.use_custom_dataset_path = True
+            cfg.dataset_path = custom_dataset_path
+            cfg.use_custom_dataset_path = True
             logger.info(f"Using custom dataset path: {custom_dataset_path}")
         
         # 如果指定了合并增强数据选项，更新配置
         if merge_augmented is not None:
-            config.merge_augmented_data = merge_augmented
+            cfg.merge_augmented_data = merge_augmented
             logger.info(f"Merge augmented data set to: {merge_augmented}")
         
         # 创建所需目录
@@ -186,9 +187,9 @@ def setup_data(extract=False, process=False, augment=False, status=False,
             # 检查只需要的数据是否准备好
             train_ready = data_status["processed_details"].get("training", False)
             test_ready = data_status["processed_details"].get("testing", False)
-            aug_ready = not config.use_data_aug or data_status["augmentation_completed"]
-            merge_ready = not (config.merge_datasets or config.merge_train_datasets or 
-                               config.merge_test_datasets or config.merge_val_datasets) or data_status["merged_datasets"]
+            aug_ready = not cfg.use_data_aug or data_status["augmentation_completed"]
+            merge_ready = not (cfg.merge_datasets or cfg.merge_train_datasets or 
+                               cfg.merge_test_datasets or cfg.merge_val_datasets) or data_status["merged_datasets"]
             
             if train_ready and test_ready and aug_ready and merge_ready:
                 logger.info("All required data is ready based on current configuration.")
@@ -210,23 +211,23 @@ def setup_data(extract=False, process=False, augment=False, status=False,
             data_prep.process_data()
         
         # 3. 执行数据增强 - 只有在config.use_data_aug=True时才需要
-        if augment and config.use_data_aug:
+        if augment and cfg.use_data_aug:
             logger.info("Augmenting data...")
             data_prep.augment_directory()
-        elif augment and not config.use_data_aug:
+        elif augment and not cfg.use_data_aug:
             logger.info("Data augmentation is disabled (use_data_aug=False). Skipping augmentation step.")
         
         # 4. 合并数据集 - 只在相应的合并标志设置为True时才需要
         need_merge = False
         if merge:
-            if merge == 'train' and (config.merge_datasets or config.merge_train_datasets):
+            if merge == 'train' and (cfg.merge_datasets or cfg.merge_train_datasets):
                 need_merge = True
-            elif merge == 'test' and (config.merge_datasets or config.merge_test_datasets):
+            elif merge == 'test' and (cfg.merge_datasets or cfg.merge_test_datasets):
                 need_merge = True
-            elif merge == 'val' and (config.merge_datasets or config.merge_val_datasets):
+            elif merge == 'val' and (cfg.merge_datasets or cfg.merge_val_datasets):
                 need_merge = True
-            elif merge == 'all' and (config.merge_datasets or config.merge_train_datasets or 
-                                     config.merge_test_datasets or config.merge_val_datasets):
+            elif merge == 'all' and (cfg.merge_datasets or cfg.merge_train_datasets or 
+                                     cfg.merge_test_datasets or cfg.merge_val_datasets):
                 need_merge = True
                 
             if need_merge:
@@ -262,7 +263,7 @@ def setup_data(extract=False, process=False, augment=False, status=False,
             "operations": {
                 "extract": extract,
                 "process": process,
-                "augment": augment and config.use_data_aug,
+                "augment": augment and cfg.use_data_aug,
                 "status": status,
                 "merge": merge and need_merge,
                 "cleanup_temp": cleanup_temp
@@ -1566,102 +1567,58 @@ class DataPreparation:
             
         logger.info("Direct extraction failed or incomplete. Falling back to standard processing...")
         
+        def ensure_annotation_file(filename: str, target_path: str, dataset_folder_name: str) -> bool:
+            """确保注释文件存在于标准路径，必要时从其他位置复制。"""
+            if os.path.exists(target_path):
+                return True
+
+            possible_paths = [
+                normalize_path(os.path.join(self.paths.temp_dataset_dir, dataset_folder_name, filename)),
+                normalize_path(os.path.join(self.paths.temp_dataset_dir, dataset_folder_name, dataset_folder_name, filename)),
+                normalize_path(os.path.join(self.paths.temp_dataset_dir, filename)),
+                normalize_path(os.path.join(self.paths.data_dir, filename)),
+            ]
+
+            found_path = next((path for path in possible_paths if os.path.exists(path)), None)
+            if found_path:
+                logger.info(f"Found annotations at {found_path}, copying to {target_path}")
+                os.makedirs(os.path.dirname(target_path), exist_ok=True)
+                shutil.copy(found_path, target_path)
+                return True
+
+            logger.info(f"Searching recursively for {filename}...")
+            for root, _, files in os.walk(self.paths.temp_dataset_dir):
+                if filename in files:
+                    found_path = os.path.join(root, filename)
+                    logger.info(f"Found annotations at {found_path}")
+                    os.makedirs(os.path.dirname(target_path), exist_ok=True)
+                    shutil.copy(found_path, target_path)
+                    return True
+
+            logger.error(f"Annotation file not found: {target_path}")
+            logger.info("Please run extraction first to prepare the dataset")
+            return False
+
         # 加载标注文件
         try:
             train_json = self.paths.train_annotation
             val_json = self.paths.val_annotation
             
             # 检查标准路径是否存在训练标注文件
-            if not os.path.exists(train_json):
-                # 尝试在提取的数据集目录中查找训练标注文件 - 扩展搜索范围以包含嵌套目录
-                possible_train_anno_paths = [
-                    # 标准位置
-                    normalize_path(os.path.join(self.paths.temp_dataset_dir, self.paths.train_dataset_folder_name, "AgriculturalDisease_train_annotations.json")),
-                    # 嵌套目录位置
-                    normalize_path(os.path.join(self.paths.temp_dataset_dir, self.paths.train_dataset_folder_name, self.paths.train_dataset_folder_name, "AgriculturalDisease_train_annotations.json")),
-                    # 其他可能的位置
-                    normalize_path(os.path.join(self.paths.temp_dataset_dir, "AgriculturalDisease_train_annotations.json")),
-                    normalize_path(os.path.join(self.paths.data_dir, "AgriculturalDisease_train_annotations.json"))
-                ]
-                
-                # 查找存在的注释文件
-                found_anno_path = None
-                for path in possible_train_anno_paths:
-                    if os.path.exists(path):
-                        found_anno_path = path
-                        break
-                
-                if found_anno_path:
-                    logger.info(f"Found training annotations at {found_anno_path}, copying to {train_json}")
-                    # 确保目标目录存在
-                    os.makedirs(os.path.dirname(train_json), exist_ok=True)
-                    # 复制标注文件到标准位置
-                    shutil.copy(found_anno_path, train_json)
-                else:
-                    # 递归搜索整个数据集目录
-                    logger.info("Searching recursively for training annotations file...")
-                    for root, _, files in os.walk(self.paths.temp_dataset_dir):
-                        for file in files:
-                            if file == "AgriculturalDisease_train_annotations.json":
-                                found_path = os.path.join(root, file)
-                                logger.info(f"Found training annotations at {found_path}")
-                                # 确保目标目录存在
-                                os.makedirs(os.path.dirname(train_json), exist_ok=True)
-                                # 复制标注文件到标准位置
-                                shutil.copy(found_path, train_json)
-                                break
-                    
-                    # 如果仍未找到，返回错误
-                    if not os.path.exists(train_json):
-                        logger.error(f"Training annotations file not found: {train_json}")
-                        logger.info("Please run extraction first to prepare the dataset")
-                        return
+            if not ensure_annotation_file(
+                "AgriculturalDisease_train_annotations.json",
+                train_json,
+                self.paths.train_dataset_folder_name,
+            ):
+                return
                 
             # 检查标准路径是否存在验证标注文件
-            if not os.path.exists(val_json):
-                # 尝试在提取的数据集目录中查找验证标注文件 - 扩展搜索范围以包含嵌套目录
-                possible_val_anno_paths = [
-                    # 标准位置
-                    normalize_path(os.path.join(self.paths.temp_dataset_dir, self.paths.val_dataset_folder_name, "AgriculturalDisease_validation_annotations.json")),
-                    # 嵌套目录位置
-                    normalize_path(os.path.join(self.paths.temp_dataset_dir, self.paths.val_dataset_folder_name, self.paths.val_dataset_folder_name, "AgriculturalDisease_validation_annotations.json")),
-                    # 其他可能的位置
-                    normalize_path(os.path.join(self.paths.temp_dataset_dir, "AgriculturalDisease_validation_annotations.json")),
-                    normalize_path(os.path.join(self.paths.data_dir, "AgriculturalDisease_validation_annotations.json"))
-                ]
-                
-                # 查找存在的注释文件
-                found_anno_path = None
-                for path in possible_val_anno_paths:
-                    if os.path.exists(path):
-                        found_anno_path = path
-                        break
-                
-                if found_anno_path:
-                    logger.info(f"Found validation annotations at {found_anno_path}, copying to {val_json}")
-                    # 确保目标目录存在
-                    os.makedirs(os.path.dirname(val_json), exist_ok=True)
-                    # 复制标注文件到标准位置
-                    shutil.copy(found_anno_path, val_json)
-                else:
-                    # 递归搜索整个数据集目录
-                    logger.info("Searching recursively for validation annotations file...")
-                    for root, _, files in os.walk(self.paths.temp_dataset_dir):
-                        for file in files:
-                            if file == "AgriculturalDisease_validation_annotations.json":
-                                found_path = os.path.join(root, file)
-                                logger.info(f"Found validation annotations at {found_path}")
-                                # 确保目标目录存在
-                                os.makedirs(os.path.dirname(val_json), exist_ok=True)
-                                # 复制标注文件到标准位置
-                                shutil.copy(found_path, val_json)
-                                break
-                    
-                    # 如果仍未找到，返回错误
-                    if not os.path.exists(val_json):
-                        logger.error(f"Validation annotations file not found: {val_json}")
-                        logger.info("Please run extraction first to prepare the dataset")
-                        return
+            if not ensure_annotation_file(
+                "AgriculturalDisease_validation_annotations.json",
+                val_json,
+                self.paths.val_dataset_folder_name,
+            ):
+                return
                 
             file_train = json.load(open(train_json, "r", encoding="utf-8"))
             file_val = json.load(open(val_json, "r", encoding="utf-8"))

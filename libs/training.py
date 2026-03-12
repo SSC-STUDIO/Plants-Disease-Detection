@@ -41,11 +41,12 @@ class Trainer:
         
     def _setup_logger(self):
         """设置并返回训练日志记录器"""
+        log_path = self.config.paths.training_log
         logging.basicConfig(
             level=logging.INFO,
             format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
             handlers=[
-                logging.FileHandler(paths.training_log, encoding="utf-8"),
+                logging.FileHandler(log_path, encoding="utf-8"),
                 logging.StreamHandler()
             ]
         )
@@ -58,7 +59,7 @@ class Trainer:
             logger.removeHandler(handler)
             
         # 添加新的handler
-        file_handler = logging.FileHandler(paths.training_log, encoding="utf-8")
+        file_handler = logging.FileHandler(log_path, encoding="utf-8")
         file_handler.setLevel(logging.INFO)
         file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
         
@@ -152,7 +153,7 @@ class Trainer:
         """
         # Create a logger if not provided
         if log is None:
-            log = init_logger(f'train_epoch_{epoch}.log')
+            log = init_logger(f'train_epoch_{epoch}.log', cfg=self.config)
             
         train_losses = AverageMeter()
         train_top1 = AverageMeter()
@@ -367,7 +368,7 @@ class Trainer:
         否则返回最佳可用数据集。
         """
         # 使用handle_datasets函数获取适当的验证数据路径
-        val_path = handle_datasets(data_type="val")
+        val_path = handle_datasets(data_type="val", cfg=self.config)
         
         self.logger.info(f"Using validation data from: {val_path}")
         
@@ -393,7 +394,7 @@ class Trainer:
             return None
         
         # 获取数据集文件列表
-        val_files = get_files(val_path, mode="val")
+        val_files = get_files(val_path, mode="val", cfg=self.config)
         
         # 记录验证文件数量
         self.logger.info(f"Validation dataset contains {len(val_files)} images")
@@ -412,6 +413,7 @@ class Trainer:
             enable_sampling=self.config.enable_sampling,
             validate_images=self.config.enable_image_validation,
             validation_workers=self.config.image_validation_workers,
+            cfg=self.config,
         )
         return DataLoader(
             val_dataset, 
@@ -499,7 +501,7 @@ class Trainer:
             self.logger.info(f"CUDA device name: {torch.cuda.get_device_name(0)}")
         
         # Create a detailed training log
-        train_log = init_logger('train_detailed.log')
+        train_log = init_logger('train_detailed.log', cfg=self.config)
         self.logger.info("Training started")
         
         # Get loss function and optimizer
@@ -525,7 +527,7 @@ class Trainer:
         # Create model EMA
         model_ema = None
         if self.config.use_ema:
-            model_ema = create_model_ema(model)
+            model_ema = create_model_ema(model, cfg=self.config)
             
         # Training loop
         for epoch in range(start_epoch, epochs):
@@ -554,14 +556,17 @@ class Trainer:
                     'state_dict': model.state_dict(),
                     'best_acc': best_acc,
                     'optimizer': optimizer.state_dict(),
-                }, is_best, fold=0)
+                }, is_best, fold=0, cfg=self.config)
                 
                 # Log validation results
                 self.logger.info(f'Epoch {epoch+1}/{epochs} - Train loss: {train_loss:.4f}, acc: {train_acc:.4f} | '
                            f'Val loss: {val_loss:.4f}, acc: {val_acc:.4f}')
                 
                 # Early stopping
-                if self.config.use_early_stopping and self.performance_metrics.should_stop(val_loss):
+                if self.config.use_early_stopping and self.performance_metrics.should_stop(
+                    val_loss,
+                    self.config.early_stopping_patience,
+                ):
                     self.logger.info(f"Early stopping at epoch {epoch+1}")
                     break
             else:
@@ -577,7 +582,7 @@ class Trainer:
                     'state_dict': model.state_dict(),
                     'best_acc': best_acc,
                     'optimizer': optimizer.state_dict(),
-                }, is_best, fold=0)
+                }, is_best, fold=0, cfg=self.config)
         
         # Return training summary
         self.logger.info("Training completed successfully")
@@ -632,7 +637,7 @@ class Trainer:
         """
         # 使用handle_datasets函数获取适当的训练数据路径
         # 该函数已经修改为优先使用合并的数据集(如果有)，否则使用配置策略选择单个数据集
-        train_path = handle_datasets(data_type="train")
+        train_path = handle_datasets(data_type="train", cfg=self.config)
         
         self.logger.info(f"Using training data from: {train_path}")
         
@@ -657,7 +662,7 @@ class Trainer:
             raise ValueError(f"No training images found in {train_path}")
         
         # 获取数据集文件列表
-        train_files = get_files(train_path, mode="train")
+        train_files = get_files(train_path, mode="train", cfg=self.config)
         
         # 记录训练文件数量
         self.logger.info(f"Training dataset contains {len(train_files)} images")
@@ -674,6 +679,7 @@ class Trainer:
             enable_sampling=self.config.enable_sampling,
             validate_images=self.config.enable_image_validation,
             validation_workers=self.config.image_validation_workers,
+            cfg=self.config,
         )
         return DataLoader(
             train_dataset, 
@@ -765,7 +771,7 @@ class PerformanceMetrics:
         if val_loss is not None:
             self.metrics['val_loss'].append(val_loss)
         
-    def should_stop(self, val_loss: float) -> bool:
+    def should_stop(self, val_loss: float, patience: int) -> bool:
         """检查训练是否应该提前停止
         
         参数:
@@ -784,7 +790,7 @@ class PerformanceMetrics:
             self.patience_counter = 0
             
         self.metrics['val_loss'].append(val_loss)
-        return self.patience_counter >= config.early_stopping_patience
+        return self.patience_counter >= patience
         
     def get_summary(self) -> Dict[str, Any]:
         """获取性能指标摘要"""
@@ -803,7 +809,7 @@ class PerformanceMetrics:
             'peak_memory': float(max(self.metrics['memory_usage'])) if self.metrics['memory_usage'] else 0.0
         }
 
-def init_logger(log_name='train_details.log') -> Logger:
+def init_logger(log_name='train_details.log', cfg: Optional[Any] = None) -> Logger:
     """初始化Logger对象
     
     参数:
@@ -812,11 +818,9 @@ def init_logger(log_name='train_details.log') -> Logger:
     返回:
         初始化后的Logger对象
     """
-    # Ensure logs directory exists
-    os.makedirs(paths.log_dir, exist_ok=True)
-    
+    cfg = cfg or config
     log = Logger()
-    log.open(os.path.join(paths.log_dir, log_name))
+    log.open(log_name, log_dir=cfg.paths.log_dir)
     return log
 
 def train_model(cfg=None, force_train: bool = False):

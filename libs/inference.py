@@ -10,7 +10,7 @@ from typing import List, Dict, Any, Optional, Tuple, Union
 from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
 from utils.utils import MyEncoder, build_transforms, get_image_extensions, is_image_file
-from config import config, paths
+from config import config
 from models.model import get_net
 
 class InferenceManager:
@@ -21,7 +21,8 @@ class InferenceManager:
         model_path: Optional[str] = None,
         device: Optional[str] = None,
         model_name: Optional[str] = None,
-        logger=None
+        logger=None,
+        cfg=None,
     ):
         """初始化推理管理器
         
@@ -31,6 +32,7 @@ class InferenceManager:
             model_name: 模型名称（覆盖默认配置）
             logger: 可选的日志记录器实例
         """
+        self.config = cfg or config
         self.model_path = model_path
         self.device = self._get_device(device)
         self.model = None
@@ -43,7 +45,7 @@ class InferenceManager:
             level=logging.INFO,
             format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
             handlers=[
-                logging.FileHandler(paths.inference_log),
+                logging.FileHandler(self.config.paths.inference_log),
                 logging.StreamHandler()
             ]
         )
@@ -79,12 +81,16 @@ class InferenceManager:
         model_path = model_path or self.model_path
         if model_path is None:
             raise ValueError("No model path provided")
-        model_name = model_name or self.model_name or config.model_name
+        model_name = model_name or self.model_name or self.config.model_name
             
         self.logger.info(f"Loading model from {model_path}")
         
         # 初始化模型架构
-        model = get_net(model_name=model_name, num_classes=config.num_classes, pretrained=config.pretrained)
+        model = get_net(
+            model_name=model_name,
+            num_classes=self.config.num_classes,
+            pretrained=self.config.pretrained,
+        )
         
         # 加载权重
         try:
@@ -118,7 +124,7 @@ class InferenceManager:
             raise RuntimeError("Model not loaded. Call load_model() first")
             
         # 准备图像变换
-        transform = build_transforms(train=False, test=True)
+        transform = build_transforms(train=False, test=True, cfg=self.config)
         
         # 加载并变换图像
         try:
@@ -164,7 +170,7 @@ class InferenceManager:
             
         # Get image files
         candidates = [os.path.join(image_folder, f) for f in os.listdir(image_folder)]
-        image_extensions = get_image_extensions()
+        image_extensions = get_image_extensions(cfg=self.config)
         image_files = [
             path for path in candidates
             if os.path.isfile(path) and is_image_file(path, image_extensions)
@@ -178,7 +184,7 @@ class InferenceManager:
         self.logger.info(f"Found {len(image_files)} image files")
         
         # Create dataset and dataloader
-        dataset = InferenceDataset(image_files)
+        dataset = InferenceDataset(image_files, cfg=self.config)
         dataloader = DataLoader(
             dataset, 
             batch_size=batch_size, 
@@ -235,7 +241,7 @@ class InferenceManager:
     def save_predictions(
         self,
         predictions: List[Dict],
-        output_file: str = paths.prediction_file,
+        output_file: Optional[str] = None,
         output_format: str = "submit",
     ) -> None:
         """将预测结果保存到JSON文件
@@ -245,6 +251,7 @@ class InferenceManager:
             output_file: 输出文件路径
             output_format: submit(提交格式)或full(完整输出)
         """
+        output_file = output_file or self.config.paths.prediction_file
         # Create output directory if it doesn't exist
         output_dir = os.path.dirname(output_file)
         if output_dir:
@@ -282,14 +289,15 @@ class InferenceManager:
 class InferenceDataset(Dataset):
     """推理数据集类"""
     
-    def __init__(self, file_paths):
+    def __init__(self, file_paths, cfg=None):
         """初始化数据集
         
         参数:
             file_paths: 图像文件路径列表
         """
+        self.config = cfg or config
         self.file_paths = file_paths
-        self.transforms = build_transforms(train=False, test=True)
+        self.transforms = build_transforms(train=False, test=True, cfg=self.config)
         
     def __len__(self):
         """返回数据集大小"""
@@ -312,12 +320,12 @@ class InferenceDataset(Dataset):
         except Exception as e:
             logging.error(f"Error loading image {img_path}: {str(e)}")
             # Return empty image
-            return torch.zeros((3, config.img_height, config.img_weight)), img_path
+            return torch.zeros((3, self.config.img_height, self.config.img_weight)), img_path
 
 def predict(
     model_path: str,
     input_path: str,
-    output_file: str = paths.prediction_file,
+    output_file: Optional[str] = None,
     is_dir: bool = False,
     device: Optional[str] = None,
     model_name: Optional[str] = None,
@@ -327,6 +335,7 @@ def predict(
     save_probs: bool = False,
     output_format: str = "submit",
     confidence_threshold: Optional[float] = None,
+    cfg=None,
 ) -> List[Dict]:
     """预测函数，支持单张图片或图片目录
     
@@ -347,9 +356,11 @@ def predict(
         预测结果字典列表
     """
     logger = logging.getLogger('Inference')
+    cfg = cfg or config
+    output_file = output_file or cfg.paths.prediction_file
     
     # 初始化推理管理器
-    inference = InferenceManager(model_path, device=device, model_name=model_name)
+    inference = InferenceManager(model_path, device=device, model_name=model_name, cfg=cfg)
     
     try:
         # 加载模型
@@ -363,11 +374,17 @@ def predict(
                 return []
                 
             # 检查目录是否为空
-            image_extensions = get_image_extensions()
-            image_files = [
-                f for f in os.listdir(input_path)
-                if is_image_file(f, image_extensions)
+            image_extensions = get_image_extensions(cfg=cfg)
+            candidates = [
+                os.path.join(input_path, f)
+                for f in os.listdir(input_path)
             ]
+            image_files = [
+                path
+                for path in candidates
+                if os.path.isfile(path) and is_image_file(path, image_extensions)
+            ]
+            image_files.sort()
             if not image_files:
                 logger.error(f"No image files found in directory: {input_path}")
                 return []
@@ -376,8 +393,8 @@ def predict(
             logger.info(f"Predicting on {len(image_files)} images in {input_path}")
             predictions = inference.predict_batch(
                 input_path,
-                batch_size=batch_size or config.test_batch_size,
-                num_workers=num_workers or config.num_workers,
+                batch_size=batch_size or cfg.test_batch_size,
+                num_workers=num_workers or cfg.num_workers,
                 topk=topk,
                 return_probabilities=save_probs,
                 return_topk=True,

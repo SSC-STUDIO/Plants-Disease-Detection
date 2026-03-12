@@ -124,7 +124,12 @@ except Exception:
     ModelEmaV2 = CustomModelEmaV2
     logger.info("Using custom ModelEmaV2 implementation")
 
-def save_latest_model(state: Dict[str, Any], is_best: bool, fold: int):
+def save_latest_model(
+    state: Dict[str, Any],
+    is_best: bool,
+    fold: int,
+    cfg: Optional[DefaultConfigs] = None,
+):
     """保存模型检查点
     
     参数:
@@ -132,13 +137,14 @@ def save_latest_model(state: Dict[str, Any], is_best: bool, fold: int):
         is_best: 是否是最佳模型
         fold: 折叠编号
     """
-    os.makedirs(os.path.join(config.weights, config.model_name, str(fold)), exist_ok=True)
-    os.makedirs(os.path.join(config.best_weights, config.model_name, str(fold)), exist_ok=True)
+    cfg = cfg or config
+    os.makedirs(os.path.join(cfg.weights, cfg.model_name, str(fold)), exist_ok=True)
+    os.makedirs(os.path.join(cfg.best_weights, cfg.model_name, str(fold)), exist_ok=True)
     
-    filename = os.path.join(config.weights, config.model_name, str(fold), "_latest_model.pth.tar")
+    filename = os.path.join(cfg.weights, cfg.model_name, str(fold), "_latest_model.pth.tar")
     torch.save(state, filename)
     if is_best:
-        shutil.copyfile(filename, os.path.join(config.best_weights, config.model_name, str(fold), 'best_model.pth.tar'))
+        shutil.copyfile(filename, os.path.join(cfg.best_weights, cfg.model_name, str(fold), 'best_model.pth.tar'))
         logger.info(f"Saved best model checkpoint to {filename}")
 
 class AverageMeter:
@@ -167,22 +173,31 @@ class AverageMeter:
         self.count += n
         self.avg = self.sum / self.count
 
-def adjust_learning_rate(optimizer: torch.optim.Optimizer, epoch: int):
+def adjust_learning_rate(
+    optimizer: torch.optim.Optimizer,
+    epoch: int,
+    cfg: Optional[DefaultConfigs] = None,
+):
     """调整学习率
     
     参数:
         optimizer: 优化器
         epoch: 当前轮次
     """
-    lr = config.lr * (0.1 ** (epoch // 3))
+    cfg = cfg or config
+    lr = cfg.lr * (0.1 ** (epoch // 3))
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
     logger.info(f"Adjusted learning rate to {lr}")
 
 
-def get_image_extensions(extensions: Optional[Tuple[str, ...]] = None) -> Tuple[str, ...]:
+def get_image_extensions(
+    extensions: Optional[Tuple[str, ...]] = None,
+    cfg: Optional[DefaultConfigs] = None,
+) -> Tuple[str, ...]:
     """获取规范化后的图像扩展名列表（小写，带点）"""
-    exts = extensions or config.image_extensions
+    cfg = cfg or config
+    exts = extensions or cfg.image_extensions
     normalized: List[str] = []
     for ext in exts:
         if not ext:
@@ -195,9 +210,12 @@ def get_image_extensions(extensions: Optional[Tuple[str, ...]] = None) -> Tuple[
     return tuple(normalized)
 
 
-def get_image_glob_patterns(extensions: Optional[Tuple[str, ...]] = None) -> Tuple[str, ...]:
+def get_image_glob_patterns(
+    extensions: Optional[Tuple[str, ...]] = None,
+    cfg: Optional[DefaultConfigs] = None,
+) -> Tuple[str, ...]:
     """根据扩展名生成 glob 模式（同时包含大小写）"""
-    exts = get_image_extensions(extensions)
+    exts = get_image_extensions(extensions, cfg=cfg)
     patterns: List[str] = []
     for ext in exts:
         patterns.append(f"*{ext}")
@@ -205,12 +223,16 @@ def get_image_glob_patterns(extensions: Optional[Tuple[str, ...]] = None) -> Tup
     return tuple(dict.fromkeys(patterns))
 
 
-def is_image_file(path: str, extensions: Optional[Tuple[str, ...]] = None) -> bool:
+def is_image_file(
+    path: str,
+    extensions: Optional[Tuple[str, ...]] = None,
+    cfg: Optional[DefaultConfigs] = None,
+) -> bool:
     """判断路径是否为允许的图像文件"""
     if not path or not isinstance(path, str):
         return False
     ext = os.path.splitext(path)[1].lower()
-    return ext in get_image_extensions(extensions)
+    return ext in get_image_extensions(extensions, cfg=cfg)
 
 
 def build_transforms(
@@ -219,6 +241,7 @@ def build_transforms(
     use_data_aug: Optional[bool] = None,
     img_height: Optional[int] = None,
     img_weight: Optional[int] = None,
+    cfg: Optional[DefaultConfigs] = None,
 ) -> T.Compose:
     """构建图像变换管道，训练/测试保持一致。
 
@@ -229,9 +252,10 @@ def build_transforms(
         img_height: 图像高度
         img_weight: 图像宽度
     """
-    img_height = img_height or config.img_height
-    img_weight = img_weight or config.img_weight
-    use_data_aug = config.use_data_aug if use_data_aug is None else use_data_aug
+    cfg = cfg or config
+    img_height = img_height or cfg.img_height
+    img_weight = img_weight or cfg.img_weight
+    use_data_aug = cfg.use_data_aug if use_data_aug is None else use_data_aug
 
     base_transforms: List[T.Compose] = [
         T.Resize((img_height, img_weight)),
@@ -490,18 +514,23 @@ class Logger:
         """初始化日志记录器"""
         self.file = None
 
-    def open(self, file_path: Union[str, Path], mode: str = None):
+    def open(
+        self,
+        file_path: Union[str, Path],
+        mode: str = None,
+        log_dir: Optional[Union[str, Path]] = None,
+    ):
         """打开日志文件
         
         参数:
             file_path: 日志文件路径
             mode: 打开模式
         """
-        log_dir = Path(paths.log_dir)
+        log_dir = Path(log_dir or paths.log_dir)
 
         # 确保路径在log目录下
-        if isinstance(file_path, str) and not file_path.startswith(paths.log_dir):
-            file_path = os.path.join(paths.log_dir, os.path.basename(file_path))
+        if isinstance(file_path, str) and not file_path.startswith(str(log_dir)):
+            file_path = os.path.join(str(log_dir), os.path.basename(file_path))
         elif isinstance(file_path, Path):
             try:
                 file_path.relative_to(log_dir)
@@ -509,7 +538,7 @@ class Logger:
                 file_path = log_dir / file_path.name
         
         # 确保logs目录存在
-        os.makedirs(paths.log_dir, exist_ok=True)
+        os.makedirs(log_dir, exist_ok=True)
         
         self.file = open(file_path, mode) if mode else open(file_path, 'w')
 
@@ -711,7 +740,7 @@ class MyEncoder(json.JSONEncoder):
         else:
             return super(MyEncoder, self).default(obj)
 
-def create_model_ema(model: nn.Module):
+def create_model_ema(model: nn.Module, cfg: Optional[DefaultConfigs] = None):
     """Create EMA model if enabled
     
     Args:
@@ -720,21 +749,22 @@ def create_model_ema(model: nn.Module):
     Returns:
         EMA model instance or None
     """
-    if not config.use_ema:
+    cfg = cfg or config
+    if not cfg.use_ema:
         return None
 
     try:
         # Check if the ModelEmaV2 class from timm is available and working
-        model_ema = ModelEmaV2(model, decay=config.ema_decay)
+        model_ema = ModelEmaV2(model, decay=cfg.ema_decay)
         
         # Test that the model was created correctly
-        logger.info(f"Created EMA model with decay rate {config.ema_decay}")
+        logger.info(f"Created EMA model with decay rate {cfg.ema_decay}")
         
         return model_ema
     except Exception as e:
         logger.warning(f"Failed to create EMA model: {str(e)}. EMA will be disabled.")
         # Disable EMA for this run to prevent further errors
-        config.use_ema = False
+        cfg.use_ema = False
     return None
 
 def update_ema(ema: ModelEmaV2, model: nn.Module, iter: int): # type: ignore
@@ -768,7 +798,11 @@ def update_ema(ema: ModelEmaV2, model: nn.Module, iter: int): # type: ignore
         logger.warning(f"Error updating EMA model: {str(e)}")
         # Continue without EMA update rather than crashing the training
 
-def handle_datasets(data_type: str = "train", list_only: bool = False):
+def handle_datasets(
+    data_type: str = "train",
+    list_only: bool = False,
+    cfg: Optional[DefaultConfigs] = None,
+):
     """查找并处理特定类型的多个数据集
     
     参数:
@@ -778,62 +812,63 @@ def handle_datasets(data_type: str = "train", list_only: bool = False):
     返回:
         最终使用的数据集路径或数据集路径列表
     """
-    base_dir = paths.data_dir
+    cfg = cfg or config
+    base_dir = cfg.paths.data_dir
     target_dirs = []
     
     # 确定当前数据类型的合并设置
     should_merge = False
     if data_type == "train":
         # 优先使用特定的合并设置，如果设置了全局合并，也启用
-        should_merge = config.merge_train_datasets or config.merge_datasets
-        merged_dir = paths.merged_train_dir
+        should_merge = cfg.merge_train_datasets or cfg.merge_datasets
+        merged_dir = cfg.paths.merged_train_dir
     elif data_type == "test":
-        should_merge = config.merge_test_datasets or config.merge_datasets
-        merged_dir = paths.merged_test_dir
+        should_merge = cfg.merge_test_datasets or cfg.merge_datasets
+        merged_dir = cfg.paths.merged_test_dir
     elif data_type == "val":
-        should_merge = config.merge_val_datasets or config.merge_datasets
-        merged_dir = paths.merged_val_dir
+        should_merge = cfg.merge_val_datasets or cfg.merge_datasets
+        merged_dir = cfg.paths.merged_val_dir
     
     # 查找所有相关的数据集目录
     if data_type == "train":
         # 检查合并目录是否存在且有内容
-        if should_merge and os.path.exists(paths.merged_train_dir):
-            merged_files = glob.glob(os.path.join(paths.merged_train_dir, "**", "*.*"), recursive=True)
+        if should_merge and os.path.exists(cfg.paths.merged_train_dir):
+            merged_files = glob.glob(os.path.join(cfg.paths.merged_train_dir, "**", "*.*"), recursive=True)
             if merged_files:
                 if not list_only:
-                    logger.info(f"Using merged training dataset: {paths.merged_train_dir}")
-                    return paths.merged_train_dir
+                    logger.info(f"Using merged training dataset: {cfg.paths.merged_train_dir}")
+                    return cfg.paths.merged_train_dir
                 else:
                     # 如果只是列出所有数据集，则包含合并目录
-                    target_dirs.append(paths.merged_train_dir)
+                    target_dirs.append(cfg.paths.merged_train_dir)
         
         # 搜索训练数据集目录
         train_dirs = [d for d in glob.glob(f"{base_dir}/**/train", recursive=True)]
         target_dirs.extend(train_dirs)
         
         # 检查增强数据目录
-        if config.use_data_aug and os.path.exists(paths.aug_train_dir):
-            aug_files = glob.glob(os.path.join(paths.aug_train_dir, "**", "*.*"), recursive=True)
+        if cfg.use_data_aug and os.path.exists(cfg.paths.aug_train_dir):
+            aug_files = glob.glob(os.path.join(cfg.paths.aug_train_dir, "**", "*.*"), recursive=True)
             if aug_files:
                 if not list_only:
-                    logger.info(f"Found augmented training data: {paths.aug_train_dir}")
+                    logger.info(f"Found augmented training data: {cfg.paths.aug_train_dir}")
                 
                 # 如果只是列出所有数据集或者需要合并增强数据，则包含增强目录
-                if list_only or config.merge_augmented_data:
-                    if paths.aug_train_dir not in target_dirs:
-                        target_dirs.append(paths.aug_train_dir)
+                if list_only or cfg.merge_augmented_data:
+                    if cfg.paths.aug_train_dir not in target_dirs:
+                        target_dirs.append(cfg.paths.aug_train_dir)
                         
     elif data_type == "test":
         # 检查合并目录是否存在且有内容
-        if should_merge and os.path.exists(paths.merged_test_dir):
-            merged_files = glob.glob(os.path.join(paths.merged_test_dir, "*.*"))
+        if should_merge and os.path.exists(cfg.paths.merged_test_dir):
+            merged_files = glob.glob(os.path.join(cfg.paths.merged_test_dir, "*.*"))
             if merged_files:
                 if not list_only:
-                    logger.info(f"Using merged test dataset: {paths.merged_test_dir}")
-                    return paths.merged_test_dir
+                    logger.info(f"Using merged test dataset: {cfg.paths.merged_test_dir}")
+                    return cfg.paths.merged_test_dir
                 else:
                     # 如果只是列出所有数据集，则包含合并目录
-                    target_dirs.append(paths.merged_test_dir)
+                    target_dirs.append(cfg.paths.merged_test_dir)
         
         # 查找所有测试目录，包括子目录
         test_dirs = [d for d in glob.glob(f"{base_dir}/**/test/images", recursive=True)]
@@ -841,29 +876,29 @@ def handle_datasets(data_type: str = "train", list_only: bool = False):
         target_dirs.extend(test_dirs + test_specific_dirs)
         
         # 如果设置了不使用所有测试集，则过滤只保留指定的测试集
-        if not config.use_all_test_datasets and not list_only:
+        if not cfg.use_all_test_datasets and not list_only:
             filtered_dirs = []
             for d in target_dirs:
-                if config.primary_test_dataset in d:
+                if cfg.primary_test_dataset in d:
                     filtered_dirs.append(d)
             
             if filtered_dirs:
                 target_dirs = filtered_dirs
-                logger.info(f"Using only test dataset matching '{config.primary_test_dataset}'")
+                logger.info(f"Using only test dataset matching '{cfg.primary_test_dataset}'")
             else:
-                logger.warning(f"No test dataset matching '{config.primary_test_dataset}' found, using all available")
+                logger.warning(f"No test dataset matching '{cfg.primary_test_dataset}' found, using all available")
                 
     elif data_type == "val":
         # 检查合并目录是否存在且有内容
-        if should_merge and os.path.exists(paths.merged_val_dir):
-            merged_files = glob.glob(os.path.join(paths.merged_val_dir, "*.*"))
+        if should_merge and os.path.exists(cfg.paths.merged_val_dir):
+            merged_files = glob.glob(os.path.join(cfg.paths.merged_val_dir, "*.*"))
             if merged_files:
                 if not list_only:
-                    logger.info(f"Using merged validation dataset: {paths.merged_val_dir}")
-                    return paths.merged_val_dir
+                    logger.info(f"Using merged validation dataset: {cfg.paths.merged_val_dir}")
+                    return cfg.paths.merged_val_dir
                 else:
                     # 如果只是列出所有数据集，则包含合并目录
-                    target_dirs.append(paths.merged_val_dir)
+                    target_dirs.append(cfg.paths.merged_val_dir)
         
         # 搜索验证数据集目录
         val_dirs = [d for d in glob.glob(f"{base_dir}/**/val", recursive=True)]
@@ -878,11 +913,11 @@ def handle_datasets(data_type: str = "train", list_only: bool = False):
     # 如果没有找到，返回默认路径
     if not target_dirs:
         if data_type == "train":
-            return config.train_data
+            return cfg.train_data
         elif data_type == "test":
-            return config.test_data
+            return cfg.test_data
         else:
-            return config.val_data
+            return cfg.val_data
     
     # 只有一个数据集时，直接返回
     if len(target_dirs) == 1:
@@ -893,23 +928,23 @@ def handle_datasets(data_type: str = "train", list_only: bool = False):
     # 根据策略选择一个数据集
     selected_dir = None
     
-    if config.dataset_to_use == "first":
+    if cfg.dataset_to_use == "first":
         selected_dir = target_dirs[0]
         logger.info(f"Selected first {data_type} dataset: {selected_dir}")
     
-    elif config.dataset_to_use == "last":
+    elif cfg.dataset_to_use == "last":
         selected_dir = target_dirs[-1]
         logger.info(f"Selected last {data_type} dataset: {selected_dir}")
     
-    elif config.dataset_to_use == "specific":
+    elif cfg.dataset_to_use == "specific":
         # 查找特定名称的数据集
         for dir_path in target_dirs:
-            if config.specific_dataset in dir_path:
+            if cfg.specific_dataset in dir_path:
                 selected_dir = dir_path
                 logger.info(f"Found specified {data_type} dataset: {selected_dir}")
                 break
         if selected_dir is None:
-            logger.warning(f"Could not find specified {data_type} dataset: {config.specific_dataset}, using largest dataset instead")
+            logger.warning(f"Could not find specified {data_type} dataset: {cfg.specific_dataset}, using largest dataset instead")
             selected_dir = max(target_dirs, key=lambda d: len(glob.glob(os.path.join(d, "**/*"), recursive=True)))
     
     else:  # "auto" 或其他未知选项
@@ -919,40 +954,41 @@ def handle_datasets(data_type: str = "train", list_only: bool = False):
     
     return selected_dir
 
-def test_dataset_handling():
+def test_dataset_handling(cfg: Optional[DefaultConfigs] = None):
     """测试数据集处理功能"""
+    cfg = cfg or config
     logger.info("=== Testing Dataset Handling ===")
     
     # 测试列出数据集
     logger.info("Testing dataset listing...")
-    train_datasets = handle_datasets(data_type="train", list_only=True)
+    train_datasets = handle_datasets(data_type="train", list_only=True, cfg=cfg)
     logger.info(f"Found {len(train_datasets)} training datasets")
     
-    test_datasets = handle_datasets(data_type="test", list_only=True)
+    test_datasets = handle_datasets(data_type="test", list_only=True, cfg=cfg)
     logger.info(f"Found {len(test_datasets)} test datasets")
     
-    val_datasets = handle_datasets(data_type="val", list_only=True)
+    val_datasets = handle_datasets(data_type="val", list_only=True, cfg=cfg)
     logger.info(f"Found {len(val_datasets)} validation datasets")
     
     # 测试数据集合并
     logger.info("Testing dataset merging...")
-    old_setting = config.merge_datasets
-    config.merge_datasets = True
+    old_setting = cfg.merge_datasets
+    cfg.merge_datasets = True
     
     # 测试训练集处理
-    train_path = handle_datasets(data_type="train")
+    train_path = handle_datasets(data_type="train", cfg=cfg)
     logger.info(f"Selected training dataset path: {train_path}")
     
     # 测试测试集处理
-    test_path = handle_datasets(data_type="test")
+    test_path = handle_datasets(data_type="test", cfg=cfg)
     logger.info(f"Selected test dataset path: {test_path}")
     
     # 测试验证集处理
-    val_path = handle_datasets(data_type="val")
+    val_path = handle_datasets(data_type="val", cfg=cfg)
     logger.info(f"Selected validation dataset path: {val_path}")
     
     # 恢复原始设置
-    config.merge_datasets = old_setting
+    cfg.merge_datasets = old_setting
     
     logger.info("=== Testing Complete ===")
     return train_path, test_path, val_path
@@ -982,7 +1018,7 @@ if __name__ == "__main__":
         logger.info(f"Specific dataset name set to: {args.dataset}")
     
     if args.test:
-        test_dataset_handling()
+        test_dataset_handling(cfg=config)
 
 def process_images_multithread(images, process_function, max_workers=None, batch_size=50, desc="Processing images"):
     """使用多线程技术以批处理方式处理大量图像
