@@ -57,6 +57,11 @@ desktop.ini
 *.swp
 *~
 
+# AI 进度/规划文件
+task_plan.md
+findings.md
+progress.md
+
 # 大文件和数据集
 *.zip
 *.rar

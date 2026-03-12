@@ -169,6 +169,10 @@ class InferenceManager:
             raise RuntimeError("Model not loaded. Call load_model() first")
             
         # Get image files
+        if not os.path.exists(image_folder) or not os.path.isdir(image_folder):
+            self.logger.error(f"Image folder not found or not a directory: {image_folder}")
+            return []
+
         candidates = [os.path.join(image_folder, f) for f in os.listdir(image_folder)]
         image_extensions = get_image_extensions(cfg=self.config)
         image_files = [
