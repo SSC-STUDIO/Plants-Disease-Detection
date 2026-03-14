@@ -16,6 +16,12 @@
 python main.py
 ```
 
+### Smoke（语法编译）
+```powershell
+.\scripts\smoke_py_compile.ps1
+```
+详见 `docs/RUN_SMOKE.md`；变更记录见 `CHANGELOG.md`。
+
 改进版本包含以下优化：
 - 自适应学习率调度
 - 类别不平衡处理
@@ -48,6 +54,8 @@ python main.py predict --input ./data/test/images --output ./submit/prediction_f
 ```
 
 ## 安装依赖
+
+> 运行环境：Python 3.14.x（与 `pyproject.toml` 的 requires-python 保持一致）。
 
 ```bash
 uv sync

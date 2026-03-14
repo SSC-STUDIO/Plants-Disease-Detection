@@ -170,7 +170,8 @@ class InferenceManager:
             
         # Get image files
         if not os.path.exists(image_folder) or not os.path.isdir(image_folder):
-            self.logger.error(f"Image folder not found or not a directory: {image_folder}")
+            abs_folder = os.path.abspath(image_folder)
+            self.logger.error(f"Image folder not found or not a directory: {abs_folder}")
             return []
 
         candidates = [os.path.join(image_folder, f) for f in os.listdir(image_folder)]
@@ -184,6 +185,10 @@ class InferenceManager:
         if not image_files:
             self.logger.warning(f"No images found in {image_folder}")
             return []
+
+        skipped = len(candidates) - len(image_files)
+        if skipped > 0:
+            self.logger.info(f"Skipped {skipped} non-image entries in {image_folder}")
             
         self.logger.info(f"Found {len(image_files)} image files")
         
@@ -374,7 +379,8 @@ def predict(
         if is_dir:
             # 检查目录是否存在
             if not os.path.exists(input_path) or not os.path.isdir(input_path):
-                logger.error(f"Directory not found or not a directory: {input_path}")
+                abs_input = os.path.abspath(input_path)
+                logger.error(f"Directory not found or not a directory: {abs_input}")
                 return []
                 
             # 检查目录是否为空
@@ -407,7 +413,8 @@ def predict(
         else:
             # 单张图片预测
             if not os.path.exists(input_path) or not os.path.isfile(input_path):
-                logger.error(f"File not found or not a file: {input_path}")
+                abs_input = os.path.abspath(input_path)
+                logger.error(f"File not found or not a file: {abs_input}")
                 return []
                 
             # 对单个图像进行预测并将结果转换为列表格式
