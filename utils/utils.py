@@ -257,25 +257,49 @@ def build_transforms(
     img_weight = img_weight or cfg.img_weight
     use_data_aug = cfg.use_data_aug if use_data_aug is None else use_data_aug
 
-    base_transforms: List[T.Compose] = [
-        T.Resize((img_height, img_weight)),
-        T.ToTensor(),
-        T.Normalize(
-            mean=[0.485, 0.456, 0.406],
-            std=[0.229, 0.224, 0.225],
-        ),
-    ]
+    normalize = T.Normalize(
+        mean=[0.485, 0.456, 0.406],
+        std=[0.229, 0.224, 0.225],
+    )
 
     if train and not test and use_data_aug:
-        train_transforms = [
-            T.RandomRotation(30),
+        train_transforms: List[Any] = [
+            T.RandomResizedCrop(
+                (img_height, img_weight),
+                scale=(0.7, 1.0),
+                ratio=(0.8, 1.25),
+            ),
             T.RandomHorizontalFlip(),
             T.RandomVerticalFlip(),
-            T.RandomAffine(45),
+            T.RandomRotation(20),
+            T.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.15, hue=0.03),
         ]
-        base_transforms[1:1] = train_transforms
 
-    return T.Compose(base_transforms)
+        if hasattr(T, "RandAugment"):
+            train_transforms.append(T.RandAugment(num_ops=2, magnitude=9))
+
+        train_transforms.extend([
+            T.ToTensor(),
+            normalize,
+        ])
+
+        if cfg.use_random_erasing:
+            train_transforms.append(
+                T.RandomErasing(
+                    p=0.25,
+                    scale=(0.02, 0.12),
+                    ratio=(0.3, 3.3),
+                    value="random",
+                )
+            )
+
+        return T.Compose(train_transforms)
+
+    return T.Compose([
+        T.Resize((img_height, img_weight)),
+        T.ToTensor(),
+        normalize,
+    ])
 
 def get_optimizer(model: nn.Module, name: str = 'adamw', cfg: Optional[DefaultConfigs] = None):
     """获取优化器

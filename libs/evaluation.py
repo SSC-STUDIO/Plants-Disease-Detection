@@ -12,6 +12,7 @@ from sklearn.metrics import classification_report, confusion_matrix
 
 from config import config, DefaultConfigs
 from dataset.dataloader import PlantDiseaseDataset, get_files
+from libs.inference import InferenceManager
 from models.model import get_net
 from utils.utils import AverageMeter, accuracy, get_loss_function, handle_datasets
 
@@ -56,6 +57,7 @@ def _infer_model_name(model_path: str) -> Optional[str]:
         "efficientnet_b4",
         "efficientnetv2_s",
         "convnext_small",
+        "convnextv2_base_384",
         "swin_transformer",
         "hybrid_model",
         "ensemble_model",
@@ -104,6 +106,7 @@ def evaluate_model(
     num_workers: Optional[int] = None,
     device: Optional[str] = None,
     topk: int = 2,
+    tta_views: Optional[int] = None,
     output_dir: Optional[str] = None,
     save_confusion: bool = True,
     save_report: bool = True,
@@ -134,8 +137,12 @@ def evaluate_model(
     logger.info(f"Model architecture: {model_name}")
     logger.info(f"Evaluation data: {data_dir}")
     logger.info(f"Device: {eval_device}")
+    logger.info(f"TTA views: {tta_views or cfg.tta_views}")
 
     model = _load_model(model_path, eval_device, model_name=model_name, cfg=cfg)
+    tta_helper = InferenceManager(model_path=None, device=str(eval_device), model_name=model_name, cfg=cfg)
+    tta_helper.model = model
+    tta_helper.device = eval_device
 
     eval_files = get_files(data_dir, mode="val")
     eval_dataset = PlantDiseaseDataset(
@@ -154,9 +161,9 @@ def evaluate_model(
     )
     eval_loader = DataLoader(
         eval_dataset,
-        batch_size=batch_size or cfg.val_batch_size,
+        batch_size=cfg.val_batch_size if batch_size is None else batch_size,
         shuffle=False,
-        num_workers=num_workers or cfg.num_workers,
+        num_workers=cfg.num_workers if num_workers is None else num_workers,
         pin_memory=eval_device.type == "cuda",
         collate_fn=lambda batch: (torch.stack([x[0] for x in batch], 0), [x[1] for x in batch]),
     )
@@ -174,7 +181,8 @@ def evaluate_model(
             inputs = inputs.to(eval_device)
             targets_tensor = torch.tensor(targets).to(eval_device)
 
-            outputs = model(inputs)
+            probabilities = tta_helper._predict_probabilities(inputs, tta_views=tta_views)
+            outputs = torch.log(probabilities.clamp_min(1e-8))
             loss = criterion(outputs, targets_tensor)
 
             prec1, preck = accuracy(outputs, targets_tensor, topk=(1, max(1, topk)))
@@ -182,7 +190,7 @@ def evaluate_model(
             top1_meter.update(prec1.item(), inputs.size(0))
             topk_meter.update(preck.item(), inputs.size(0))
 
-            preds = torch.argmax(outputs, dim=1).cpu().numpy().tolist()
+            preds = torch.argmax(probabilities, dim=1).cpu().numpy().tolist()
             all_preds.extend(preds)
             all_targets.extend(targets)
 
@@ -190,6 +198,7 @@ def evaluate_model(
         "model_path": model_path,
         "data_dir": data_dir,
         "device": str(eval_device),
+        "tta_views": int(tta_views or cfg.tta_views),
         "samples": len(all_targets),
         "loss": float(loss_meter.avg),
         "top1": float(top1_meter.avg),

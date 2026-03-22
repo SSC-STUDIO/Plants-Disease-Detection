@@ -2899,3 +2899,25 @@ requests.exceptions.ConnectionError: Could not reach host. Are you offline?
 2025-06-01 18:41:58,078 - WDM - INFO - Get LATEST chromedriver version for google-chrome
 2025-06-01 18:42:00,144 - WDM - INFO - Get LATEST chromedriver version for google-chrome
 2025-06-01 18:42:02,059 - WDM - INFO - Driver [d:\Users\ChenRunsen\My-Project\Application_Project\Plants-Disease-Detection\tools\data_collector\.wdm\drivers\chromedriver\win64\136.0.7103.113\chromedriver-win32/chromedriver.exe] found in cache
+2026-03-22 11:39:41,168 - App - INFO - Starting Plant Disease Data Collector Tool
+2026-03-22 11:39:41,169 - App - INFO - Running in headless mode
+2026-03-22 11:39:41,473 - App - INFO - Importing data from: C:\Users\96152\My-Project\Active\Software\Plants-Disease-Detection\temp_dataset_tool_test
+2026-03-22 11:39:41,481 - DatasetMaker - INFO - 处理类别: class_a
+2026-03-22 11:39:41,484 - DatasetMaker - INFO - 过滤低质量图像: 6 个文件
+2026-03-22 11:39:41,557 - DatasetMaker - INFO - 低质量过滤后保留 4/6 个文件，过滤 2 个文件
+2026-03-22 11:39:41,557 - DatasetMaker - INFO - 去除重复图像: 4 个文件
+2026-03-22 11:39:41,565 - DatasetMaker - INFO - 重复图像去除后保留 1/4 个文件
+2026-03-22 11:39:41,569 - DatasetMaker - INFO - 类别 class_a 处理完成: 训练集 0, 验证集 0, 测试集 1
+2026-03-22 11:39:41,571 - DatasetMaker - INFO - 标签文件已保存到: C:\Users\96152\My-Project\Active\Software\Plants-Disease-Detection\temp_dataset_tool_output\labels.json
+2026-03-22 11:39:41,575 - DatasetMaker - INFO - 数据集清单已保存到: C:\Users\96152\My-Project\Active\Software\Plants-Disease-Detection\temp_dataset_tool_output\manifest.json
+2026-03-22 11:40:04,281 - App - INFO - Starting Plant Disease Data Collector Tool
+2026-03-22 11:40:04,281 - App - INFO - Running in headless mode
+2026-03-22 11:40:04,547 - App - INFO - Importing data from: C:\Users\96152\My-Project\Active\Software\Plants-Disease-Detection\temp_dataset_tool_test
+2026-03-22 11:40:04,557 - DatasetMaker - INFO - 处理类别: class_a
+2026-03-22 11:40:04,559 - DatasetMaker - INFO - 过滤低质量图像: 3 个文件
+2026-03-22 11:40:04,611 - DatasetMaker - INFO - 低质量过滤后保留 2/3 个文件，过滤 1 个文件
+2026-03-22 11:40:04,611 - DatasetMaker - INFO - 去除重复图像: 2 个文件
+2026-03-22 11:40:04,614 - DatasetMaker - INFO - 重复图像去除后保留 1/2 个文件
+2026-03-22 11:40:04,617 - DatasetMaker - INFO - 类别 class_a 处理完成: 训练集 0, 验证集 0, 测试集 1
+2026-03-22 11:40:04,619 - DatasetMaker - INFO - 标签文件已保存到: C:\Users\96152\My-Project\Active\Software\Plants-Disease-Detection\temp_dataset_tool_output_v2\labels.json
+2026-03-22 11:40:04,625 - DatasetMaker - INFO - 数据集清单已保存到: C:\Users\96152\My-Project\Active\Software\Plants-Disease-Detection\temp_dataset_tool_output_v2\manifest.json

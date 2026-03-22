@@ -114,7 +114,7 @@ class DefaultConfigs:
     train_data: str = field(default="")  # 训练数据路径
     test_data: str = field(default="")  # 测试数据路径
     val_data: str = "none"  # 验证数据路径
-    model_name: str = "efficientnetv2_s"  # 使用 EfficientNetV2-S 模型
+    model_name: str = "convnextv2_base_384"  # 使用更现代的 ConvNeXt V2 Base 384 模型
     weights: str = field(default="")  # 权重保存路径
     best_weights: str = field(default="")  # 最佳模型保存路径
     submit: str = field(default="")  # 提交结果保存路径
@@ -159,18 +159,18 @@ class DefaultConfigs:
 
     # 训练参数 Training Parameters
     epoch: int = 40  # 训练轮数
-    pretrained: bool = False  # 是否使用预训练权重
-    train_batch_size: int = 64  # 降低批次大小以适应更大的模型
-    val_batch_size: int = 64  # 验证批次大小
-    test_batch_size: int = 64  # 测试批次大小
+    pretrained: bool = True  # 默认启用预训练权重以提升迁移学习效果
+    train_batch_size: int = 8  # ConvNeXt V2 Base 384 默认使用更保守的批次大小
+    val_batch_size: int = 8  # 验证批次大小
+    test_batch_size: int = 8  # 测试批次大小
     num_workers: Union[int, str] = 32  # 数据加载线程数（可以是整数或 'auto'）
     img_height: int = 384  # 图像高度
     img_weight: int = 384  # 图像宽度
     num_classes: int = 59  # 类别数量
     seed: int = 888  # 随机种子
-    lr: float = 1e-3  # 学习率
+    lr: float = 3e-4  # 学习率
     lr_decay: float = 1e-4  # 学习率衰减
-    weight_decay: float = 1e-4  # 权重衰减
+    weight_decay: float = 5e-2  # 权重衰减
     
     # 优化器配置 Optimizer Configuration
     optimizer: str = 'adamw'  # 优化器选择
@@ -178,15 +178,18 @@ class DefaultConfigs:
     
     # 学习率调度配置 Learning Rate Scheduler Configuration
     scheduler: str = 'cosine'  # 使用余弦退火调度器
-    warmup_epochs: int = 5  # 预热轮数
+    warmup_epochs: int = 3  # 预热轮数
     warmup_factor: float = 0.1  # 预热因子
     
     # 数据增强参数 Data Augmentation Parameters
     use_mixup: bool = True  # 是否使用Mixup
-    mixup_alpha: float = 0.8  # Mixup alpha参数
-    cutmix_prob: float = 0.7  # CutMix概率
+    mixup_alpha: float = 0.4  # Mixup alpha参数
+    cutmix_prob: float = 0.5  # CutMix概率
     use_random_erasing: bool = True  # 是否使用随机擦除
     use_data_aug: bool = True  # 是否使用数据增强
+    use_weighted_sampler: bool = True  # 是否使用按类别频次加权的采样器
+    weighted_sampler_power: float = 1.0  # 类别采样权重指数
+    weighted_sampler_min_count: int = 1  # 采样时的最小类别计数下限
     
     # 训练策略参数 Training Strategy Parameters
     use_amp: bool = True  # 是否使用混合精度训练
@@ -194,7 +197,7 @@ class DefaultConfigs:
     ema_decay: float = 0.995  # EMA衰减率
     use_early_stopping: bool = True  # 是否使用早停
     early_stopping_patience: int = 10  # 早停耐心值
-    gradient_clip_val: float = 0.5  # 梯度裁剪值
+    gradient_clip_val: float = 1.0  # 梯度裁剪值
     use_gradient_checkpointing: bool = True  # 是否使用梯度检查点
     label_smoothing: float = 0.1  # 标签平滑系数
     use_focal_loss: bool = True  # 是否使用Focal Loss
@@ -231,6 +234,7 @@ class DefaultConfigs:
     progressive_end_size: int = 380  # 渐进式缩放最终尺寸
     progressive_epochs: int = 15  # 渐进式缩放过渡轮数
     progressive_sizes: List[int] = field(default_factory=lambda: [224, 320, 380])  # 渐进式缩放的图像尺寸
+    tta_views: int = 4  # 推理阶段测试时增强视角数，支持 1/2/3/4
 
     def __post_init__(self):
         """初始化后的验证和设置"""

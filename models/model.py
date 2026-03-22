@@ -17,6 +17,40 @@ def _build_torchvision_model(builder, weights_attr, pretrained):
         return builder(weights=weights_enum.DEFAULT if pretrained else None)
     return builder(pretrained=pretrained)
 
+
+def _freeze_all_parameters(model):
+    for param in model.parameters():
+        param.requires_grad = False
+
+
+def _unfreeze_matching_parameters(model, trainable_keywords):
+    for name, param in model.named_parameters():
+        if any(keyword in name for keyword in trainable_keywords):
+            param.requires_grad = True
+
+
+def _create_timm_model_with_retry(model_names, pretrained, **kwargs):
+    last_error = None
+    for model_name in model_names:
+        try:
+            model = timm.create_model(model_name, pretrained=pretrained, **kwargs)
+            print(f"Created model: {model_name}")
+            return model
+        except Exception as exc:
+            last_error = exc
+
+    if pretrained:
+        print("Falling back to randomly initialized weights after pretrained download/init failure")
+        for model_name in model_names:
+            try:
+                model = timm.create_model(model_name, pretrained=False, **kwargs)
+                print(f"Created model without pretrained weights: {model_name}")
+                return model
+            except Exception as exc:
+                last_error = exc
+
+    raise RuntimeError(f"Failed to create timm model from candidates {model_names}: {last_error}") from last_error
+
 def get_densenet169(num_classes, pretrained=True):
     """生成DenseNet169模型
     Args:
@@ -169,6 +203,28 @@ def get_convnext(num_classes, pretrained=True):
     
     return model
 
+
+def get_convnextv2_base_384(num_classes, pretrained=True):
+    """获取更现代的 ConvNeXt V2 Base 384 模型。"""
+    if timm is None:
+        print("timm is not installed, falling back to torchvision convnext_small")
+        return get_convnext(num_classes, pretrained=pretrained)
+
+    model = _create_timm_model_with_retry(
+        [
+            "convnextv2_base.fcmae_ft_in22k_in1k_384",
+            "convnextv2_base.fcmae_ft_in22k_in1k",
+        ],
+        pretrained=pretrained,
+        num_classes=num_classes,
+        drop_path_rate=0.2,
+    )
+
+    _freeze_all_parameters(model)
+    _unfreeze_matching_parameters(model, ("stages.3", "norm", "head"))
+
+    return model
+
 def get_swin_transformer(num_classes, pretrained=True):
     """获取Swin Transformer模型，适用于细粒度分类任务
     Args:
@@ -299,6 +355,7 @@ MODEL_REGISTRY = {
     "efficientnet_b4": get_efficientnet,
     "efficientnetv2_s": get_efficientnetv2,
     "convnext_small": get_convnext,
+    "convnextv2_base_384": get_convnextv2_base_384,
     "swin_transformer": get_swin_transformer,
     "hybrid_model": get_hybrid_model,
     "ensemble_model": get_ensemble_model,
@@ -322,5 +379,5 @@ def get_net(model_name, num_classes, pretrained=True):
         print(f"Using model: {model_name}")
         return MODEL_REGISTRY[model_name](num_classes, pretrained=pretrained)
     else:
-        print(f"Model {model_name} not found, using default EfficientNetV2")
-        return get_efficientnetv2(num_classes, pretrained=pretrained)
+        print(f"Model {model_name} not found, using default ConvNeXt V2 Base 384")
+        return get_convnextv2_base_384(num_classes, pretrained=pretrained)

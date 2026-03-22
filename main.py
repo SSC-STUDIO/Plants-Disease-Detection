@@ -383,6 +383,15 @@ def apply_train_overrides(args: argparse.Namespace, cfg=None) -> None:
     set_if_not_none('mixup_alpha', 'mixup_alpha', 'Mixup alpha')
     set_if_not_none('cutmix_prob', 'cutmix_prob', 'CutMix probability')
     set_if_true('no_random_erasing', 'use_random_erasing', 'Disabling random erasing augmentation')
+    resolve_toggle(
+        'enable_weighted_sampler',
+        'disable_weighted_sampler',
+        'use_weighted_sampler',
+        'Weighted sampler enabled for training',
+        'Weighted sampler disabled for training',
+    )
+    set_if_not_none('weighted_sampler_power', 'weighted_sampler_power', 'weighted sampler power')
+    set_if_not_none('tta_views', 'tta_views', 'TTA views')
 
     set_if_true('no_early_stopping', 'use_early_stopping', 'Disabling early stopping')
     set_if_not_none('patience', 'early_stopping_patience', 'early stopping patience')
@@ -458,6 +467,12 @@ def add_train_arguments(train_parser: argparse.ArgumentParser) -> None:
                              help='CutMix probability (default: from config)')
     train_parser.add_argument('--no-random-erasing', action='store_true',
                              help='Disable random erasing augmentation')
+    train_parser.add_argument('--enable-weighted-sampler', action='store_true',
+                             help='Enable weighted random sampling for class balancing')
+    train_parser.add_argument('--disable-weighted-sampler', action='store_true',
+                             help='Disable weighted random sampling for class balancing')
+    train_parser.add_argument('--weighted-sampler-power', type=float,
+                             help='Exponent applied to inverse class frequency for weighted sampling')
     train_parser.add_argument('--disable-augmentation', action='store_true',
                              help='Disable all data augmentation (overrides configured default)')
     train_parser.add_argument('--enable-augmentation', action='store_true',
@@ -572,6 +587,8 @@ def setup_parser() -> argparse.ArgumentParser:
                              help='Output format: submit (image_id + class) or full (with confidence/topk)')
     infer_parser.add_argument('--confidence-threshold', type=float,
                              help='Mark predictions below this confidence as low_confidence')
+    infer_parser.add_argument('--tta-views', type=int, choices=[1, 2, 3, 4],
+                             help='Number of test-time augmentation views to average')
     infer_parser.add_argument('--device', type=str, choices=['auto', 'cuda', 'cpu'],
                              help='Device for inference (default: auto)')
 
@@ -590,6 +607,8 @@ def setup_parser() -> argparse.ArgumentParser:
                              help='Number of workers for evaluation dataloader')
     eval_parser.add_argument('--topk', type=int, default=2,
                              help='Top-k accuracy to report')
+    eval_parser.add_argument('--tta-views', type=int, choices=[1, 2, 3, 4],
+                             help='Number of test-time augmentation views to average during evaluation')
     eval_parser.add_argument('--output-dir', type=str,
                              help=f'Output directory for evaluation reports (default: {paths.report_dir})')
     eval_parser.add_argument('--no-confusion', action='store_true',
@@ -867,6 +886,7 @@ def run_inference(args, cfg=None) -> None:
             save_probs=getattr(args, 'save_probs', False),
             output_format=getattr(args, 'output_format', 'submit'),
             confidence_threshold=getattr(args, 'confidence_threshold', None),
+            tta_views=getattr(args, 'tta_views', None),
             cfg=cfg,
         )
     else:
@@ -884,6 +904,7 @@ def run_inference(args, cfg=None) -> None:
             save_probs=getattr(args, 'save_probs', False),
             output_format=getattr(args, 'output_format', 'submit'),
             confidence_threshold=getattr(args, 'confidence_threshold', None),
+            tta_views=getattr(args, 'tta_views', None),
             cfg=cfg,
         )
     
@@ -906,6 +927,7 @@ def run_evaluation(args) -> None:
             num_workers=getattr(args, 'num_workers', None),
             device=device,
             topk=getattr(args, 'topk', 2),
+            tta_views=getattr(args, 'tta_views', None),
             output_dir=getattr(args, 'output_dir', None),
             save_confusion=not getattr(args, 'no_confusion', False),
             save_report=not getattr(args, 'no_report', False),

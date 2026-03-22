@@ -88,3 +88,7 @@ temp/
 !logs/.gitkeep
 !submit/.gitkeep
 !aug/.gitkeep 
+
+# Local MCP config
+.mcp.json
+

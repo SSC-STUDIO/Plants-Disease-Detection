@@ -4,8 +4,9 @@ import torch
 import numpy as np 
 import warnings
 import logging
+from collections import Counter
 from config import config, paths
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, WeightedRandomSampler
 from dataset.dataloader import *    
 from timeit import default_timer as timer
 from models.model import *
@@ -470,11 +471,27 @@ class Trainer:
             self.logger.info("Force training enabled: ignoring existing checkpoints and starting from epoch 0.")
         
         # Setup for training
+        use_pretrained_backbone = self.config.pretrained and start_epoch == 0
         model = get_net(
             model_name=self.config.model_name,
             num_classes=self.config.num_classes,
-            pretrained=self.config.pretrained,
+            pretrained=use_pretrained_backbone,
         )
+        if use_pretrained_backbone:
+            self.logger.info("Initializing model with pretrained backbone weights")
+        else:
+            self.logger.info("Skipping pretrained backbone initialization for resumed training")
+
+        if self.config.use_gradient_checkpointing:
+            grad_checkpointing_setter = getattr(model, "set_grad_checkpointing", None)
+            if callable(grad_checkpointing_setter):
+                try:
+                    grad_checkpointing_setter(enable=True)
+                except TypeError:
+                    grad_checkpointing_setter(True)
+                self.logger.info("Enabled model gradient checkpointing")
+            else:
+                self.logger.info("Gradient checkpointing requested, but model does not expose set_grad_checkpointing()")
         
         # Load weights if we're continuing training
         if start_epoch > 0:
@@ -681,10 +698,38 @@ class Trainer:
             validation_workers=self.config.image_validation_workers,
             cfg=self.config,
         )
+        sampler = None
+        shuffle = True
+
+        if self.config.use_weighted_sampler:
+            labels = [label for _, label in train_dataset.imgs if isinstance(label, int)]
+            if labels and len(labels) == len(train_dataset.imgs):
+                class_counts = Counter(labels)
+                sample_weights = []
+                for _, label in train_dataset.imgs:
+                    count = max(class_counts.get(label, 1), self.config.weighted_sampler_min_count)
+                    sample_weights.append((1.0 / float(count)) ** self.config.weighted_sampler_power)
+
+                sampler = WeightedRandomSampler(
+                    weights=torch.as_tensor(sample_weights, dtype=torch.double),
+                    num_samples=len(sample_weights),
+                    replacement=True,
+                )
+                shuffle = False
+                self.logger.info(
+                    "Enabled weighted sampler for %d classes (min_count=%d, power=%.2f)",
+                    len(class_counts),
+                    self.config.weighted_sampler_min_count,
+                    self.config.weighted_sampler_power,
+                )
+            else:
+                self.logger.warning("Weighted sampler requested, but training labels were not available in expected format")
+
         return DataLoader(
             train_dataset, 
             batch_size=self.config.train_batch_size,
-            shuffle=True,
+            shuffle=shuffle,
+            sampler=sampler,
             num_workers=self.config.num_workers,
             pin_memory=True,
             collate_fn=collate_fn

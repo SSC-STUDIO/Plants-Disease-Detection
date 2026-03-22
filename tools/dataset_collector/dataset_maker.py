@@ -4,16 +4,19 @@ import json
 import shutil
 import logging
 import random
-from typing import Dict, List, Any
+import hashlib
+from datetime import datetime
+from typing import Dict, List, Any, Optional
 import time
 import io
 import concurrent.futures
 import math
-from PIL import Image
+from PIL import Image, ImageStat
 import ssl
 import urllib.request
 
 logger = logging.getLogger('DatasetMaker')
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}
 
 class DatasetMaker:
     """数据集生成器类，支持从本地数据和在线数据生成数据集"""
@@ -47,7 +50,11 @@ class DatasetMaker:
                        split_ratio: Dict[str, float] = None,
                        class_mapping: Dict[str, str] = None,
                        generate_labels: bool = True,
-                       size_filter: Dict[str, Any] = None) -> bool:
+                       size_filter: Dict[str, Any] = None,
+                       quality_filter: bool = False,
+                       deduplicate: bool = False,
+                       quality_config: Dict[str, Any] = None,
+                       manifest_name: Optional[str] = None) -> bool:
         """从本地数据生成数据集
         
         参数:
@@ -57,6 +64,10 @@ class DatasetMaker:
             class_mapping: 类别映射，例如 {"folder_name": "class_name"}
             generate_labels: 是否生成标签文件
             size_filter: 图像尺寸过滤配置，例如 {"enabled": True, "min_width": 224, "min_height": 224}
+            quality_filter: 是否过滤低质量图像
+            deduplicate: 是否去除重复图像
+            quality_config: 低质量过滤配置
+            manifest_name: 生成的数据集清单文件名，例如 "manifest.json"
             
         返回:
             bool: 是否成功
@@ -110,6 +121,7 @@ class DatasetMaker:
                 for ext in [".jpg", ".jpeg", ".png", ".bmp"]:
                     image_files.extend(glob.glob(os.path.join(class_path, f"*{ext}")))
                     image_files.extend(glob.glob(os.path.join(class_path, f"*{ext.upper()}")))
+                image_files = sorted(set(image_files))
                 
                 if not image_files:
                     logger.warning(f"类别 {class_dir} 中未找到图像文件")
@@ -120,6 +132,12 @@ class DatasetMaker:
                     image_files = self._filter_by_size(image_files, 
                                                      size_filter.get("min_width", 224),
                                                      size_filter.get("min_height", 224))
+
+                if quality_filter:
+                    image_files = self._filter_low_quality_images(image_files, quality_config)
+
+                if deduplicate:
+                    image_files = self._remove_duplicate_images(image_files)
                 
                 # 打乱文件顺序
                 random.shuffle(image_files)
@@ -161,6 +179,23 @@ class DatasetMaker:
                 with open(labels_path, 'w', encoding='utf-8') as f:
                     json.dump(label_mapping, f, ensure_ascii=False, indent=2)
                 logger.info(f"标签文件已保存到: {labels_path}")
+
+            if manifest_name:
+                manifest_path = os.path.join(output_dir, manifest_name)
+                self._write_dataset_manifest(
+                    output_dir=output_dir,
+                    manifest_path=manifest_path,
+                    dataset_type="local_import",
+                    source_summary={"source_dir": source_dir},
+                    label_mapping=label_mapping,
+                    extra_config={
+                        "split_ratio": split_ratio,
+                        "quality_filter": quality_filter,
+                        "deduplicate": deduplicate,
+                        "size_filter": size_filter,
+                        "quality_config": quality_config or {},
+                    },
+                )
             
             return True
             
@@ -173,7 +208,9 @@ class DatasetMaker:
     def make_from_web(self, search_terms: List[str], output_dir: str,
                      images_per_class: int = 100, sources: List[str] = None,
                      generate_labels: bool = True, quality_filter: bool = True,
-                     deduplicate: bool = True, size_filter: Dict[str, Any] = None) -> bool:
+                     deduplicate: bool = True, size_filter: Dict[str, Any] = None,
+                     quality_config: Dict[str, Any] = None,
+                     manifest_name: Optional[str] = None) -> bool:
         """从网络收集数据并生成数据集
         
         参数:
@@ -185,6 +222,8 @@ class DatasetMaker:
             quality_filter: 是否过滤低质量图像
             deduplicate: 是否去除重复图像
             size_filter: 图像尺寸过滤配置，例如 {"enabled": True, "min_width": 224, "min_height": 224}
+            quality_config: 低质量过滤配置
+            manifest_name: 生成的数据集清单文件名，例如 "manifest.json"
             
         返回:
             bool: 是否成功
@@ -271,7 +310,7 @@ class DatasetMaker:
                 if quality_filter:
                     self._update_progress(current_progress, total_tasks,
                                       f"正在过滤 '{search_term}' 的低质量图像...")
-                    collected_images = self._filter_low_quality_images(collected_images)
+                    collected_images = self._filter_low_quality_images(collected_images, quality_config)
                 
                 if size_filter and size_filter.get("enabled", False):
                     self._update_progress(current_progress, total_tasks,
@@ -311,6 +350,26 @@ class DatasetMaker:
                 with open(labels_path, 'w', encoding='utf-8') as f:
                     json.dump(label_mapping, f, ensure_ascii=False, indent=2)
                 logger.info(f"标签文件已保存到: {labels_path}")
+
+            if manifest_name:
+                manifest_path = os.path.join(output_dir, manifest_name)
+                self._write_dataset_manifest(
+                    output_dir=output_dir,
+                    manifest_path=manifest_path,
+                    dataset_type="web_collection",
+                    source_summary={
+                        "search_terms": search_terms,
+                        "sources": sources,
+                        "images_per_class": images_per_class,
+                    },
+                    label_mapping=label_mapping,
+                    extra_config={
+                        "quality_filter": quality_filter,
+                        "deduplicate": deduplicate,
+                        "size_filter": size_filter,
+                        "quality_config": quality_config or {},
+                    },
+                )
             
             # 清理临时目录
             if os.path.exists(temp_dir):
@@ -326,6 +385,89 @@ class DatasetMaker:
             import traceback
             logger.error(traceback.format_exc())
             return False
+
+    def _write_dataset_manifest(
+        self,
+        output_dir: str,
+        manifest_path: str,
+        dataset_type: str,
+        source_summary: Dict[str, Any],
+        label_mapping: Dict[str, Any],
+        extra_config: Dict[str, Any],
+    ) -> None:
+        """生成数据集清单，记录分割、类别、体积和来源信息。"""
+        split_summary = {}
+        total_images = 0
+        total_bytes = 0
+
+        for split in ["train", "val", "test"]:
+            split_dir = os.path.join(output_dir, split)
+            split_info = self._scan_split_directory(split_dir)
+            split_summary[split] = split_info
+            total_images += split_info["images"]
+            total_bytes += split_info["bytes"]
+
+        manifest = {
+            "dataset_name": os.path.basename(os.path.abspath(output_dir)),
+            "dataset_type": dataset_type,
+            "generated_at": datetime.now().isoformat(timespec="seconds"),
+            "output_dir": os.path.abspath(output_dir),
+            "total_images": total_images,
+            "total_bytes": total_bytes,
+            "source_summary": source_summary,
+            "label_mapping": label_mapping,
+            "splits": split_summary,
+            "config": extra_config,
+        }
+
+        with open(manifest_path, "w", encoding="utf-8") as f:
+            json.dump(manifest, f, ensure_ascii=False, indent=2)
+        logger.info(f"数据集清单已保存到: {manifest_path}")
+
+    def _scan_split_directory(self, split_dir: str) -> Dict[str, Any]:
+        """统计单个分割目录的图片数、字节数和类别分布。"""
+        summary = {
+            "path": os.path.abspath(split_dir),
+            "images": 0,
+            "bytes": 0,
+            "classes": {},
+        }
+
+        if not os.path.isdir(split_dir):
+            return summary
+
+        class_dirs = [
+            entry for entry in sorted(os.listdir(split_dir))
+            if os.path.isdir(os.path.join(split_dir, entry))
+        ]
+
+        for class_name in class_dirs:
+            class_path = os.path.join(split_dir, class_name)
+            files = [
+                path for path in self._iter_image_files(class_path)
+                if os.path.isfile(path)
+            ]
+            image_count = len(files)
+            byte_count = sum(os.path.getsize(path) for path in files)
+            summary["classes"][class_name] = {
+                "images": image_count,
+                "bytes": byte_count,
+            }
+            summary["images"] += image_count
+            summary["bytes"] += byte_count
+
+        return summary
+
+    def _iter_image_files(self, root_dir: str):
+        """遍历目录中的所有图像文件。"""
+        for current_root, _, filenames in os.walk(root_dir):
+            for filename in filenames:
+                if self._is_image_file(filename):
+                    yield os.path.join(current_root, filename)
+
+    def _is_image_file(self, file_name: str) -> bool:
+        """判断文件是否为支持的图像类型。"""
+        return os.path.splitext(file_name)[1].lower() in IMAGE_EXTENSIONS
     
     def _copy_files_to_split(self, files: List[str], target_dir: str) -> None:
         """将文件复制到相应的数据集分割目录
@@ -1110,20 +1252,70 @@ class DatasetMaker:
         
         return collected_files
     
-    def _filter_low_quality_images(self, image_files: List[str]) -> List[str]:
+    def _filter_low_quality_images(self, image_files: List[str], config: Dict[str, Any] = None) -> List[str]:
         """过滤低质量图像
         
         参数:
             image_files: 图像文件路径列表
+            config: 过滤配置，例如 {"min_file_size_kb": 12, "min_width": 224}
             
         返回:
             过滤后的图像文件路径列表
         """
         logger.info(f"过滤低质量图像: {len(image_files)} 个文件")
-        
-        # 在实际实现中，可以检查图像分辨率、文件大小、清晰度等
-        # 这里为了示例，不进行实际过滤
-        return image_files
+
+        config = config or {}
+        min_file_size = int(config.get("min_file_size_kb", 12) * 1024)
+        min_width = int(config.get("min_width", 224))
+        min_height = int(config.get("min_height", 224))
+        min_variance = float(config.get("min_variance", 25.0))
+        max_aspect_ratio = float(config.get("max_aspect_ratio", 6.0))
+
+        filtered_files = []
+        rejected = 0
+
+        for file_path in image_files:
+            try:
+                if not os.path.isfile(file_path):
+                    rejected += 1
+                    continue
+
+                if os.path.getsize(file_path) < min_file_size:
+                    logger.debug(f"图像文件太小，已过滤: {file_path}")
+                    rejected += 1
+                    continue
+
+                with Image.open(file_path) as img:
+                    width, height = img.size
+                    if width < min_width or height < min_height:
+                        logger.debug(f"图像分辨率不足，已过滤: {file_path} ({width}x{height})")
+                        rejected += 1
+                        continue
+
+                    shorter_edge = max(min(width, height), 1)
+                    aspect_ratio = max(width, height) / shorter_edge
+                    if aspect_ratio > max_aspect_ratio:
+                        logger.debug(f"图像纵横比异常，已过滤: {file_path} ({width}x{height})")
+                        rejected += 1
+                        continue
+
+                    grayscale = img.convert("L")
+                    if max(width, height) > 512:
+                        grayscale.thumbnail((512, 512))
+                    variance = ImageStat.Stat(grayscale).var[0]
+                    if variance < min_variance:
+                        logger.debug(f"图像纹理过少，已过滤: {file_path} (variance={variance:.2f})")
+                        rejected += 1
+                        continue
+
+                filtered_files.append(file_path)
+
+            except Exception as e:
+                logger.warning(f"检查图像质量时出错: {file_path} - {str(e)}")
+                rejected += 1
+
+        logger.info(f"低质量过滤后保留 {len(filtered_files)}/{len(image_files)} 个文件，过滤 {rejected} 个文件")
+        return filtered_files
     
     def _remove_duplicate_images(self, image_files: List[str]) -> List[str]:
         """去除重复图像
@@ -1135,10 +1327,26 @@ class DatasetMaker:
             去重后的图像文件路径列表
         """
         logger.info(f"去除重复图像: {len(image_files)} 个文件")
-        
-        # 在实际实现中，可以计算图像哈希或特征向量，比较相似度
-        # 这里为了示例，不进行实际去重
-        return image_files
+
+        seen_hashes = {}
+        deduplicated_files = []
+
+        for file_path in image_files:
+            try:
+                file_hash = self._hash_file(file_path)
+            except Exception as e:
+                logger.warning(f"计算文件哈希时出错: {file_path} - {str(e)}")
+                continue
+
+            if file_hash in seen_hashes:
+                logger.debug(f"发现重复图像，已跳过: {file_path} == {seen_hashes[file_hash]}")
+                continue
+
+            seen_hashes[file_hash] = file_path
+            deduplicated_files.append(file_path)
+
+        logger.info(f"重复图像去除后保留 {len(deduplicated_files)}/{len(image_files)} 个文件")
+        return deduplicated_files
     
     def _filter_by_size(self, image_files: List[str], min_width: int, min_height: int) -> List[str]:
         """根据尺寸过滤图像
@@ -1167,3 +1375,11 @@ class DatasetMaker:
         
         logger.info(f"尺寸过滤后保留 {len(filtered_files)}/{len(image_files)} 个文件")
         return filtered_files 
+
+    def _hash_file(self, file_path: str) -> str:
+        """计算文件 SHA-256，用于重复文件去重。"""
+        hasher = hashlib.sha256()
+        with open(file_path, "rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                hasher.update(chunk)
+        return hasher.hexdigest()

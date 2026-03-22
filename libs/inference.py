@@ -13,6 +13,25 @@ from utils.utils import MyEncoder, build_transforms, get_image_extensions, is_im
 from config import config
 from models.model import get_net
 
+
+def _infer_model_name(model_path: str) -> Optional[str]:
+    path_norm = model_path.replace("\\", "/")
+    candidates = [
+        "densenet169",
+        "efficientnet_b4",
+        "efficientnetv2_s",
+        "convnext_small",
+        "convnextv2_base_384",
+        "swin_transformer",
+        "hybrid_model",
+        "ensemble_model",
+    ]
+    for name in candidates:
+        if f"/{name}/" in path_norm:
+            return name
+    return None
+
+
 class InferenceManager:
     """植物病害检测推理管理器类"""
     
@@ -38,6 +57,35 @@ class InferenceManager:
         self.model = None
         self.model_name = model_name
         self.logger = logger or self._setup_logger()
+
+    @staticmethod
+    def _normalize_tta_views(tta_views: Optional[int], default: int) -> int:
+        value = default if tta_views is None else tta_views
+        return max(1, min(int(value), 4))
+
+    def _tta_variants(self, batch_images: torch.Tensor, tta_views: int) -> List[torch.Tensor]:
+        variants = [batch_images]
+        if tta_views >= 2:
+            variants.append(torch.flip(batch_images, dims=[3]))
+        if tta_views >= 3:
+            variants.append(torch.flip(batch_images, dims=[2]))
+        if tta_views >= 4:
+            variants.append(torch.flip(batch_images, dims=[2, 3]))
+        return variants[:tta_views]
+
+    def _predict_probabilities(self, batch_images: torch.Tensor, tta_views: Optional[int] = None) -> torch.Tensor:
+        if self.model is None:
+            raise RuntimeError("Model not loaded. Call load_model() first")
+
+        normalized_tta_views = self._normalize_tta_views(tta_views, self.config.tta_views)
+        probability_sum = None
+
+        for augmented_batch in self._tta_variants(batch_images, normalized_tta_views):
+            logits = self.model(augmented_batch)
+            probabilities = torch.nn.functional.softmax(logits, dim=1)
+            probability_sum = probabilities if probability_sum is None else probability_sum + probabilities
+
+        return probability_sum / float(normalized_tta_views)
         
     def _setup_logger(self):
         """设置并返回推理日志记录器"""
@@ -81,15 +129,17 @@ class InferenceManager:
         model_path = model_path or self.model_path
         if model_path is None:
             raise ValueError("No model path provided")
-        model_name = model_name or self.model_name or self.config.model_name
+        inferred_model_name = _infer_model_name(model_path)
+        model_name = model_name or self.model_name or inferred_model_name or self.config.model_name
             
         self.logger.info(f"Loading model from {model_path}")
+        self.logger.info(f"Resolved model architecture: {model_name}")
         
         # 初始化模型架构
         model = get_net(
             model_name=model_name,
             num_classes=self.config.num_classes,
-            pretrained=self.config.pretrained,
+            pretrained=False,
         )
         
         # 加载权重
@@ -111,7 +161,7 @@ class InferenceManager:
         self.model = model.to(self.device)
         self.model.eval()
         
-    def predict_single(self, image_path: str) -> np.ndarray:
+    def predict_single(self, image_path: str, tta_views: Optional[int] = None) -> np.ndarray:
         """对单张图像进行预测
         
         参数:
@@ -136,8 +186,7 @@ class InferenceManager:
             
         # 进行预测
         with torch.no_grad():
-            output = self.model(image_tensor)
-            probabilities = torch.nn.Softmax(dim=1)(output)
+            probabilities = self._predict_probabilities(image_tensor, tta_views=tta_views)
             
         return probabilities.cpu().numpy()[0]
     
@@ -150,6 +199,7 @@ class InferenceManager:
         return_probabilities: bool = False,
         return_topk: bool = True,
         confidence_threshold: Optional[float] = None,
+        tta_views: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         """对文件夹中的所有图像进行预测
         
@@ -207,10 +257,7 @@ class InferenceManager:
         with torch.no_grad():
             for batch_images, batch_paths in tqdm(dataloader, desc="Making predictions"):
                 batch_images = batch_images.to(self.device)
-                outputs = self.model(batch_images)
-                
-                # Apply softmax to get probabilities
-                probabilities = torch.nn.Softmax(dim=1)(outputs)
+                probabilities = self._predict_probabilities(batch_images, tta_views=tta_views)
                 safe_topk = max(1, min(topk, probabilities.size(1)))
                 topk_scores, topk_indices = torch.topk(probabilities, k=safe_topk, dim=1)
                 
@@ -344,6 +391,7 @@ def predict(
     save_probs: bool = False,
     output_format: str = "submit",
     confidence_threshold: Optional[float] = None,
+    tta_views: Optional[int] = None,
     cfg=None,
 ) -> List[Dict]:
     """预测函数，支持单张图片或图片目录
@@ -403,12 +451,13 @@ def predict(
             logger.info(f"Predicting on {len(image_files)} images in {input_path}")
             predictions = inference.predict_batch(
                 input_path,
-                batch_size=batch_size or cfg.test_batch_size,
-                num_workers=num_workers or cfg.num_workers,
+                batch_size=cfg.test_batch_size if batch_size is None else batch_size,
+                num_workers=cfg.num_workers if num_workers is None else num_workers,
                 topk=topk,
                 return_probabilities=save_probs,
                 return_topk=True,
                 confidence_threshold=confidence_threshold,
+                tta_views=tta_views,
             )
         else:
             # 单张图片预测
@@ -419,7 +468,7 @@ def predict(
                 
             # 对单个图像进行预测并将结果转换为列表格式
             logger.info(f"Predicting on single image: {input_path}")
-            pred = inference.predict_single(input_path)
+            pred = inference.predict_single(input_path, tta_views=tta_views)
             topk_safe = max(1, min(topk, len(pred)))
             topk_indices = np.argsort(pred)[::-1][:topk_safe]
             topk_items = [

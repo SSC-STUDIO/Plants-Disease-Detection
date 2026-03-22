@@ -80,3 +80,5 @@
 2025-08-19 15:25:02,225 - DataLoader - INFO - Loading train dataset (251008 images)
 2025-08-19 15:25:23,979 - DataLoader - INFO - Loading val dataset from: ./data\val
 2025-08-19 15:25:24,038 - DataLoader - INFO - Loading val dataset (9078 images)
+2026-03-22 11:09:39,093 - DataLoader - INFO - Loading val dataset from: .\data\temp\eval_smoke_2
+2026-03-22 11:09:39,106 - DataLoader - INFO - Loading val dataset (4 images)
