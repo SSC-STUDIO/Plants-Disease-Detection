@@ -1,0 +1,336 @@
+import random 
+import numpy as np 
+import pandas as pd 
+import torch 
+import os
+import logging
+from itertools import chain 
+from glob import glob
+from tqdm import tqdm
+from torch.utils.data import Dataset
+from config import config, paths
+from PIL import Image 
+from concurrent.futures import ThreadPoolExecutor
+from utils.utils import handle_datasets, build_transforms, get_image_glob_patterns, get_image_extensions
+import concurrent.futures
+
+# 设置日志记录器
+logger = logging.getLogger('DataLoader')
+logger.setLevel(logging.INFO)
+
+# 创建日志处理器
+if not logger.handlers:
+    # 文件处理器
+    if not os.path.exists(paths.log_dir):
+        os.makedirs(paths.log_dir, exist_ok=True)
+    file_handler = logging.FileHandler(os.path.join(paths.log_dir, 'dataloader.log'))
+    file_handler.setLevel(logging.INFO)
+    
+    # 控制台处理器
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    
+    # 创建格式化器并添加到处理器
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    file_handler.setFormatter(formatter)
+    console_handler.setFormatter(formatter)
+    
+    # 添加处理器到日志记录器
+    logger.addHandler(file_handler)
+    logger.addHandler(console_handler)
+
+def seed_everything(cfg) -> None:
+    """设置随机种子，便于复现实验。"""
+    random.seed(cfg.seed)
+    np.random.seed(cfg.seed)
+    torch.manual_seed(cfg.seed)
+    torch.cuda.manual_seed_all(cfg.seed)
+
+class PlantDiseaseDataset(Dataset):
+    """植物病害图像数据集类"""
+    def __init__(
+        self,
+        label_list,
+        sampling_threshold,
+        sample_size=None,
+        seed=None,
+        img_width=None,
+        img_height=None,
+        use_data_aug=None,
+        transforms=None,
+        train=True,
+        test=False,
+        enable_sampling=None,
+        validate_images=None,
+        validation_workers=None,
+        cfg=None,
+        seed_all: bool = True,
+    ):
+        """初始化数据集
+        
+        参数:
+            label_list: 包含文件路径和标签的DataFrame
+            transforms: 数据增强转换
+            train: 是否为训练模式
+            test: 是否为测试模式
+        """
+        self.config = cfg or config
+        if seed_all:
+            seed_everything(self.config)
+
+        self.test = test 
+        self.train = train 
+        self.enable_sampling = self.config.enable_sampling if enable_sampling is None else enable_sampling
+        self.sampling_threshold = sampling_threshold
+        self.sample_size = self.config.sample_size if sample_size is None else sample_size
+        self.seed = self.config.seed if seed is None else seed
+        self.img_width = self.config.img_width if img_width is None else img_width
+        self.img_height = self.config.img_height if img_height is None else img_height
+        self.use_data_aug = self.config.use_data_aug if use_data_aug is None else use_data_aug
+        self.transforms = self._get_transforms(transforms, train, test)
+        self.validate_images = self.config.enable_image_validation if validate_images is None else validate_images
+        self.validation_workers = validation_workers if validation_workers is not None else self.config.image_validation_workers
+        self.imgs = self._load_images(label_list)
+        
+    def _load_images(self, label_list):
+        """加载并验证图像
+        
+        参数:
+            label_list: 包含文件路径和标签的DataFrame
+            
+        返回:
+            有效的图像数据列表
+        """
+        if self.test:
+            return [(row["filename"]) for _, row in label_list.iterrows()]
+        
+        # 将DataFrame转换为列表以提高处理速度
+        imgs = list(zip(label_list["filename"], label_list["label"]))
+        
+        # 对于大数据集，打印警告并建议采样
+        if len(imgs) > 50000:
+            print(f"Warning: The dataset is very large ({len(imgs)} images), it may cause memory problems")
+            print("Hint: Consider using smaller batch size or reducing the dataset size.")
+
+        if not self.validate_images:
+            logger.info("Image validation is disabled; skipping integrity checks")
+            if self.enable_sampling and len(imgs) > self.sampling_threshold:
+                print(f"\nThe dataset is very large ({len(imgs)} images), Conduct sampling to reduce memory usage")
+                random.seed(self.seed)
+                imgs = random.sample(imgs, self.sample_size)
+                print(f"The size of the sampled dataset: {len(imgs)} images")
+            return imgs
+
+        valid_imgs = []
+        invalid_imgs = []
+        
+        def validate_image_batch(batch):
+            """验证一批图像
+            
+            参数:
+                batch: 图像数据(文件名, 标签)元组的列表
+                
+            返回:
+                (有效图像列表, 无效图像列表)元组
+            """
+            valid = []
+            invalid = []
+            
+            for img_data in batch:
+                try:
+                    filename = img_data[0]
+                    # 检查文件是否存在
+                    if not os.path.exists(filename):
+                        invalid.append(img_data)
+                        continue
+                        
+                    # 检查文件大小，跳过过小文件
+                    file_size = os.path.getsize(filename)
+                    if file_size < 100:  # 小于100字节的文件几乎不可能是有效图像
+                        invalid.append(img_data)
+                        continue
+                        
+                    # 只验证文件头，不完整加载图像
+                    with Image.open(filename) as img:
+                        img.verify()
+                        valid.append(img_data)
+                except Exception:
+                    invalid.append(img_data)
+            
+            return valid, invalid
+        
+        # 使用多线程并行验证图像
+        print("Validating images...")
+        
+        # 更高效的批处理配置
+        batch_size = 100  # 更大的批次以减少线程创建开销
+        cpu_count = os.cpu_count() or 1
+        max_workers = min(max(1, int(self.validation_workers)), cpu_count)
+        
+        # 将图像分成批次
+        batches = []
+        for i in range(0, len(imgs), batch_size):
+            batches.append(imgs[i:min(i + batch_size, len(imgs))])
+        
+        # 使用线程池并行处理所有批次
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # 使用tqdm显示进度
+            futures = []
+            for batch in batches:
+                futures.append(executor.submit(validate_image_batch, batch))
+            
+            for future in tqdm(concurrent.futures.as_completed(futures), 
+                             total=len(futures), 
+                             desc="Validating images"):
+                try:
+                    batch_valid, batch_invalid = future.result()
+                    valid_imgs.extend(batch_valid)
+                    invalid_imgs.extend(batch_invalid)
+                except Exception as e:
+                    print(f"Error processing batch: {str(e)}")
+        
+        # 对于极大的数据集，进行采样以减少内存压力
+        if self.enable_sampling and len(valid_imgs) > self.sampling_threshold:
+            print(f"\nThe dataset is very large ({len(valid_imgs)} effective images), Conduct sampling to reduce memory usage")
+            import random
+            random.seed(self.seed)  # 保持一致性
+            valid_imgs = random.sample(valid_imgs, self.sample_size)
+            print(f"The size of the sampled dataset: {len(valid_imgs)} images")
+        
+        if invalid_imgs:
+            print(f"\nFound {len(invalid_imgs)} unreadable images that will be skipped:")
+            for _, (filename, _) in enumerate(invalid_imgs[:5], 1):
+                print(f"  {filename}")
+            if len(invalid_imgs) > 5:
+                print(f"  ... and {len(invalid_imgs) - 5} more")
+            
+        print(f"Successfully loaded {len(valid_imgs)} valid images")
+        
+        # 强制清理内存
+        import gc
+        gc.collect()
+        
+        return valid_imgs
+        
+    def _get_transforms(self, transforms, train, test):
+        """获取数据转换操作
+        
+        参数:
+            transforms: 自定义转换
+            train: 是否为训练模式
+            test: 是否为测试模式
+            
+        返回:
+            转换操作序列
+        """
+        if transforms is not None:
+            return transforms
+            
+        return build_transforms(
+            train=train,
+            test=test,
+            use_data_aug=self.use_data_aug,
+            img_height=self.img_height,
+            img_width=self.img_width,
+            cfg=self.config,
+        )
+
+    def __getitem__(self, index):
+        """获取单个数据样本
+        
+        参数:
+            index: 索引
+            
+        返回:
+            (图像张量, 标签)或(图像张量, 文件名)
+        """
+        try:
+            if self.test:
+                filename = self.imgs[index]
+                img = Image.open(filename).convert('RGB')
+                img_tensor = self.transforms(img)
+                return img_tensor, filename
+            else:
+                filename, label = self.imgs[index]
+                img = Image.open(filename).convert('RGB')
+                img_tensor = self.transforms(img)
+                return img_tensor, label
+        except Exception as e:
+            print(f"Error loading image at index {index}: {str(e)}")
+            # 返回空张量作为错误处理
+            return (torch.zeros((3, self.img_height, self.img_width)), 
+                   self.imgs[index][1] if not self.test else self.imgs[index])
+                
+    def __len__(self):
+        """返回数据集大小"""
+        return len(self.imgs)
+
+def collate_fn(batch):
+    """批次数据收集函数
+    
+    参数:
+        batch: 批次数据
+        
+    返回:
+        (图像张量堆叠, 标签列表)
+    """
+    imgs, labels = zip(*batch)
+    return torch.stack(imgs, 0), list(labels)
+
+def get_files(data_path, mode, cfg=None):
+    """获取数据集文件路径和标签
+    
+    参数:
+        data_path: 数据集根目录路径
+        mode: 'train', 'val' 或 'test' 模式
+        
+    返回:
+        包含文件路径和标签的DataFrame
+    """
+    # 使用传入的数据路径，而不是调用handle_datasets
+    actual_root = data_path
+    
+    if not os.path.exists(actual_root):
+        raise FileNotFoundError(f"Directory not found: {actual_root}")
+    
+    logger.info(f"Loading {mode} dataset from: {actual_root}")
+    
+    cfg = cfg or config
+
+    if mode == "test":
+        image_exts = get_image_extensions(cfg=cfg)
+        files = [
+            os.path.join(actual_root, img)
+            for img in os.listdir(actual_root)
+            if img.lower().endswith(image_exts)
+        ]
+        files.sort()
+        return pd.DataFrame({"filename": files})
+        
+    elif mode in ["train", "val"]: 
+        all_data_path, labels = [], []
+        image_folders = [os.path.join(actual_root, x) for x in os.listdir(actual_root) 
+                        if os.path.isdir(os.path.join(actual_root, x))]
+        
+        # 获取所有jpg和png图像路径
+        image_patterns = [f"/{pattern}" for pattern in get_image_glob_patterns(cfg=cfg)]
+        all_images = []
+        for folder in image_folders:
+            for pattern in image_patterns:
+                all_images.extend(glob(folder + pattern))
+        all_images.sort()
+                
+        logger.info(f"Loading {mode} dataset ({len(all_images)} images)")
+        for file in tqdm(all_images):
+            all_data_path.append(file)
+            # 从路径中提取标签
+            label = int(os.path.basename(os.path.dirname(file)))
+            labels.append(label)
+            
+        return pd.DataFrame({
+            "filename": all_data_path,
+            "label": labels
+        })
+        
+    else:
+        raise ValueError("Mode must be one of 'train', 'val', or 'test'") 
