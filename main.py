@@ -402,6 +402,21 @@ def apply_train_overrides(args: argparse.Namespace, cfg=None) -> None:
     set_if_true('no_ema', 'use_ema', 'Disabling Exponential Moving Average (EMA)')
     set_if_not_none('ema_decay', 'ema_decay', 'EMA decay rate')
 
+    resolve_toggle(
+        'wandb',
+        'no_wandb',
+        'use_wandb',
+        'Weights & Biases experiment tracking enabled',
+        'Weights & Biases experiment tracking disabled',
+    )
+    set_if_not_none('wandb_project', 'wandb_project', 'wandb project')
+    set_if_not_none('wandb_entity', 'wandb_entity', 'wandb entity')
+    set_if_not_none('wandb_run_name', 'wandb_run_name', 'wandb run name')
+    set_if_not_none('wandb_mode', 'wandb_mode', 'wandb mode')
+    if hasattr(args, 'wandb_tags') and args.wandb_tags is not None:
+        cfg.wandb_tags = [tag for tag in args.wandb_tags if tag]
+        logger.info(f"Setting wandb tags to {cfg.wandb_tags}")
+
     set_if_not_none('device', 'device', 'device')
     set_if_not_none('gpus', 'gpus', 'GPUs')
 
@@ -493,11 +508,27 @@ def add_train_arguments(train_parser: argparse.ArgumentParser) -> None:
                              help='Gradient clipping value (default: from config)')
     
     # EMA 选项
-    train_parser.add_argument('--no-ema', action='store_true', 
+    train_parser.add_argument('--no-ema', action='store_true',
                              help='Disable Exponential Moving Average (EMA)')
     train_parser.add_argument('--ema-decay', type=float,
                              help='EMA decay rate (default: from config)')
-    
+
+    # Weights & Biases 选项
+    train_parser.add_argument('--wandb', action='store_true',
+                             help='Enable Weights & Biases experiment tracking')
+    train_parser.add_argument('--no-wandb', action='store_true',
+                             help='Disable Weights & Biases experiment tracking')
+    train_parser.add_argument('--wandb-project', type=str,
+                             help='Weights & Biases project name (default: from config)')
+    train_parser.add_argument('--wandb-entity', type=str,
+                             help='Weights & Biases entity/team name (default: from config)')
+    train_parser.add_argument('--wandb-run-name', type=str,
+                             help='Weights & Biases run name (default: auto-generated)')
+    train_parser.add_argument('--wandb-tags', nargs='*',
+                             help='Weights & Biases tags for the run')
+    train_parser.add_argument('--wandb-mode', type=str, choices=['online', 'offline', 'disabled'],
+                             help='Weights & Biases mode (default: from config)')
+
     # 设备选项
     train_parser.add_argument('--device', type=str, choices=['auto', 'cuda', 'cpu'],
                              help='Device to use for training (default: from config)')
@@ -644,7 +675,24 @@ def setup_parser() -> argparse.ArgumentParser:
     models_parser = subparsers.add_parser('models', help='List available model architectures')
     models_parser.add_argument('--json', action='store_true',
                                help='Output as JSON list')
-    
+
+    # 模型导出命令
+    export_parser = subparsers.add_parser('export', help='Export trained model to ONNX format')
+    export_parser.add_argument('--model', type=str, required=True,
+                               help='Path to model weights file')
+    export_parser.add_argument('--model-name', type=str,
+                               help='Model architecture name (override configured default)')
+    export_parser.add_argument('--output', type=str,
+                               help='Output ONNX file path (default: model_name.onnx)')
+    export_parser.add_argument('--input-size', type=int, nargs=2, metavar=('HEIGHT', 'WIDTH'),
+                               help=f'Input image size (default: {config.img_height} {config.img_width})')
+    export_parser.add_argument('--opset', type=int, default=11,
+                               help='ONNX opset version (default: 11)')
+    export_parser.add_argument('--dynamic-axes', action='store_true',
+                               help='Enable dynamic batch size in exported model')
+    export_parser.add_argument('--verify', action='store_true',
+                               help='Verify exported model with sample inference')
+
     return parser
 
 def prepare_data(args: argparse.Namespace, cfg=None) -> Dict[str, Any]:
@@ -952,6 +1000,126 @@ def run_stats(args) -> None:
     except Exception as exc:
         logger.error(f"Stats failed: {exc}")
 
+def export_model(args) -> None:
+    """导出模型为 ONNX 格式"""
+    try:
+        import torch
+        import onnx
+    except ImportError as e:
+        logger.error("ONNX export requires 'onnx' package. Install with: pip install onnx onnxruntime")
+        logger.error(f"Import error: {e}")
+        return
+
+    from models.model import get_net
+    from utils.utils import setup_device
+
+    cfg = config
+
+    # 获取模型路径
+    model_path = args.model
+    if not os.path.exists(model_path):
+        logger.error(f"Model file not found: {model_path}")
+        return
+
+    # 获取模型名称
+    model_name = getattr(args, 'model_name', None) or cfg.model_name
+
+    # 获取输入尺寸
+    if hasattr(args, 'input_size') and args.input_size:
+        img_height, img_width = args.input_size
+    else:
+        img_height, img_width = cfg.img_height, cfg.img_width
+
+    # 获取输出路径
+    output_path = getattr(args, 'output', None)
+    if not output_path:
+        output_path = f"{model_name}.onnx"
+
+    logger.info(f"Exporting model: {model_name}")
+    logger.info(f"Model weights: {model_path}")
+    logger.info(f"Input size: {img_height}x{img_width}")
+    logger.info(f"Output path: {output_path}")
+
+    # 设置设备
+    device = setup_device(cfg)
+
+    # 创建模型
+    try:
+        model = get_net(model_name, num_classes=cfg.num_classes, pretrained=False)
+        model = model.to(device)
+
+        # 加载权重
+        checkpoint = torch.load(model_path, map_location=device)
+        if 'model_state_dict' in checkpoint:
+            model.load_state_dict(checkpoint['model_state_dict'])
+        elif 'state_dict' in checkpoint:
+            model.load_state_dict(checkpoint['state_dict'])
+        else:
+            model.load_state_dict(checkpoint)
+
+        model.eval()
+        logger.info("Model loaded successfully")
+    except Exception as e:
+        logger.error(f"Failed to load model: {e}")
+        return
+
+    # 创建示例输入
+    dummy_input = torch.randn(1, 3, img_height, img_width, device=device)
+
+    # 设置动态轴
+    dynamic_axes = None
+    if getattr(args, 'dynamic_axes', False):
+        dynamic_axes = {
+            'input': {0: 'batch_size'},
+            'output': {0: 'batch_size'}
+        }
+
+    # 导出模型
+    try:
+        logger.info("Exporting to ONNX...")
+        torch.onnx.export(
+            model,
+            dummy_input,
+            output_path,
+            export_params=True,
+            opset_version=getattr(args, 'opset', 11),
+            do_constant_folding=True,
+            input_names=['input'],
+            output_names=['output'],
+            dynamic_axes=dynamic_axes
+        )
+        logger.info(f"Model exported successfully to: {output_path}")
+    except Exception as e:
+        logger.error(f"ONNX export failed: {e}")
+        return
+
+    # 验证导出的模型
+    if getattr(args, 'verify', False):
+        try:
+            logger.info("Verifying exported model...")
+            onnx_model = onnx.load(output_path)
+            onnx.checker.check_model(onnx_model)
+            logger.info("ONNX model is valid")
+
+            # 尝试使用 onnxruntime 进行推理测试
+            try:
+                import onnxruntime as ort
+                ort_session = ort.InferenceSession(output_path)
+
+                # 创建测试输入
+                test_input = torch.randn(1, 3, img_height, img_width).numpy()
+                ort_inputs = {ort_session.get_inputs()[0].name: test_input}
+                ort_outputs = ort_session.run(None, ort_inputs)
+
+                logger.info(f"ONNX Runtime inference test passed. Output shape: {ort_outputs[0].shape}")
+            except ImportError:
+                logger.warning("onnxruntime not installed, skipping inference test")
+            except Exception as e:
+                logger.warning(f"ONNX Runtime inference test failed: {e}")
+
+        except Exception as e:
+            logger.error(f"Model verification failed: {e}")
+
 def main():
     """主函数"""
     args = setup_parser().parse_args()
@@ -1107,6 +1275,8 @@ def main():
             print(json.dumps(models, ensure_ascii=False, indent=2))
         else:
             print("\n".join(models))
+    elif args.command == "export":
+        export_model(args)
     else:
         logger.error(f"Unknown command: {args.command}")
         sys.exit(1)

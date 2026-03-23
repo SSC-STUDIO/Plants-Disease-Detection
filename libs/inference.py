@@ -376,7 +376,7 @@ class InferenceDataset(Dataset):
         except Exception as e:
             logging.error(f"Error loading image {img_path}: {str(e)}")
             # Return empty image
-            return torch.zeros((3, self.config.img_height, self.config.img_weight)), img_path
+            return torch.zeros((3, self.config.img_height, self.config.img_width)), img_path
 
 def predict(
     model_path: str,

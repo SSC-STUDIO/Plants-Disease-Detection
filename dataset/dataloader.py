@@ -54,7 +54,7 @@ class PlantDiseaseDataset(Dataset):
         sampling_threshold,
         sample_size=None,
         seed=None,
-        img_weight=None,
+        img_width=None,
         img_height=None,
         use_data_aug=None,
         transforms=None,
@@ -84,7 +84,7 @@ class PlantDiseaseDataset(Dataset):
         self.sampling_threshold = sampling_threshold
         self.sample_size = self.config.sample_size if sample_size is None else sample_size
         self.seed = self.config.seed if seed is None else seed
-        self.img_weight = self.config.img_weight if img_weight is None else img_weight
+        self.img_width = self.config.img_width if img_width is None else img_width
         self.img_height = self.config.img_height if img_height is None else img_height
         self.use_data_aug = self.config.use_data_aug if use_data_aug is None else use_data_aug
         self.transforms = self._get_transforms(transforms, train, test)
@@ -231,7 +231,7 @@ class PlantDiseaseDataset(Dataset):
             test=test,
             use_data_aug=self.use_data_aug,
             img_height=self.img_height,
-            img_weight=self.img_weight,
+            img_width=self.img_width,
             cfg=self.config,
         )
 
@@ -258,7 +258,7 @@ class PlantDiseaseDataset(Dataset):
         except Exception as e:
             print(f"Error loading image at index {index}: {str(e)}")
             # 返回空张量作为错误处理
-            return (torch.zeros((3, self.img_height, self.img_weight)), 
+            return (torch.zeros((3, self.img_height, self.img_width)), 
                    self.imgs[index][1] if not self.test else self.imgs[index])
                 
     def __len__(self):

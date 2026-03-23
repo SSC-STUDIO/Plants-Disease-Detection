@@ -1,7 +1,8 @@
-import os 
-import random 
+import os
+import random
+import importlib
 import torch
-import numpy as np 
+import numpy as np
 import warnings
 import logging
 from collections import Counter
@@ -39,6 +40,9 @@ class Trainer:
         # 初始化性能监控
         self.memory_tracker = MemoryTracker(track_cuda=self.device.type == 'cuda')
         self.performance_metrics = PerformanceMetrics()
+        self.wandb_module = None
+        self.wandb_run = None
+        self.wandb_enabled = False
         
     def _setup_logger(self):
         """设置并返回训练日志记录器"""
@@ -406,7 +410,7 @@ class Trainer:
             sampling_threshold=self.config.sampling_threshold,
             sample_size=self.config.sample_size,
             seed=self.config.seed,
-            img_weight=self.config.img_weight,
+            img_width=self.config.img_width,
             img_height=self.config.img_height,
             use_data_aug=False,
             train=False,
@@ -425,26 +429,220 @@ class Trainer:
             collate_fn=collate_fn
         )
 
+    def _get_progressive_size(self, epoch):
+        """计算当前epoch应使用的图像尺寸（用于progressive resizing）
+
+        参数:
+            epoch: 当前训练轮次
+
+        返回:
+            (height, width) 元组
+        """
+        if not self.config.progressive_resizing:
+            return self.config.img_height, self.config.img_width
+
+        # 如果超过progressive_epochs，使用最终尺寸
+        if epoch >= self.config.progressive_epochs:
+            final_size = self.config.progressive_end_size
+            return final_size, final_size
+
+        # 根据progressive_sizes列表计算当前尺寸
+        sizes = self.config.progressive_sizes
+        if not sizes:
+            # 如果列表为空，使用线性插值
+            progress = epoch / self.config.progressive_epochs
+            size = int(self.config.progressive_start_size +
+                      (self.config.progressive_end_size - self.config.progressive_start_size) * progress)
+            return size, size
+
+        # 将progressive_epochs分成len(sizes)个阶段
+        epochs_per_phase = self.config.progressive_epochs / len(sizes)
+        phase = min(int(epoch / epochs_per_phase), len(sizes) - 1)
+        size = sizes[phase]
+        return size, size
+
+    def _build_wandb_config_payload(self) -> Dict[str, Any]:
+        """构建发送到wandb的核心训练配置。"""
+        return {
+            'model_name': self.config.model_name,
+            'device': self.config.device,
+            'epochs': self.config.epoch,
+            'train_batch_size': self.config.train_batch_size,
+            'val_batch_size': self.config.val_batch_size,
+            'img_height': self.config.img_height,
+            'img_width': self.config.img_width,
+            'lr': self.config.lr,
+            'weight_decay': self.config.weight_decay,
+            'optimizer': self.config.optimizer,
+            'scheduler': self.config.scheduler,
+            'warmup_epochs': self.config.warmup_epochs,
+            'warmup_factor': self.config.warmup_factor,
+            'use_amp': self.config.use_amp,
+            'use_ema': self.config.use_ema,
+            'ema_decay': self.config.ema_decay,
+            'use_mixup': self.config.use_mixup,
+            'mixup_alpha': self.config.mixup_alpha,
+            'cutmix_prob': self.config.cutmix_prob,
+            'use_random_erasing': self.config.use_random_erasing,
+            'use_data_aug': self.config.use_data_aug,
+            'use_weighted_sampler': self.config.use_weighted_sampler,
+            'weighted_sampler_power': self.config.weighted_sampler_power,
+            'label_smoothing': self.config.label_smoothing,
+            'gradient_clip_val': self.config.gradient_clip_val,
+            'seed': self.config.seed,
+            'progressive_resizing': self.config.progressive_resizing,
+            'progressive_sizes': list(self.config.progressive_sizes),
+            'progressive_epochs': self.config.progressive_epochs,
+            'tta_views': self.config.tta_views,
+        }
+
+    def _init_wandb(self, epochs: int, start_epoch: int, force_train: bool) -> None:
+        """初始化wandb运行，失败时优雅降级。"""
+        self.wandb_module = None
+        self.wandb_run = None
+        self.wandb_enabled = False
+
+        if not getattr(self.config, 'use_wandb', False):
+            return
+
+        wandb_mode = getattr(self.config, 'wandb_mode', 'online')
+        if wandb_mode == 'disabled':
+            self.logger.info('wandb mode is disabled; skipping experiment tracking')
+            return
+
+        try:
+            wandb_module = importlib.import_module('wandb')
+        except Exception as exc:
+            self.logger.warning(f"wandb is enabled but unavailable: {str(exc)}. Continuing without wandb.")
+            return
+
+        try:
+            run = wandb_module.init(
+                project=getattr(self.config, 'wandb_project', None),
+                entity=getattr(self.config, 'wandb_entity', None),
+                name=getattr(self.config, 'wandb_run_name', None),
+                tags=getattr(self.config, 'wandb_tags', None),
+                mode=wandb_mode,
+                config={
+                    **self._build_wandb_config_payload(),
+                    'planned_epochs': epochs,
+                    'start_epoch': start_epoch,
+                    'force_train': force_train,
+                },
+            )
+        except Exception as exc:
+            self.logger.warning(f"Failed to initialize wandb: {str(exc)}. Continuing without wandb.")
+            return
+
+        self.wandb_module = wandb_module
+        self.wandb_run = run
+        self.wandb_enabled = True
+
+    def _log_wandb_epoch(
+        self,
+        epoch: int,
+        train_loss: float,
+        train_top1: float,
+        train_top2: float,
+        best_acc: float,
+        lr: float,
+        current_img_size,
+        val_loss: Optional[float] = None,
+        val_top1: Optional[float] = None,
+    ) -> None:
+        """记录epoch级别的wandb指标。"""
+        if not self.wandb_enabled or self.wandb_module is None:
+            return
+
+        payload = {
+            'epoch': epoch,
+            'train/loss': train_loss,
+            'train/top1': train_top1,
+            'train/top2': train_top2,
+            'best_acc': best_acc,
+            'lr': lr,
+            'image_size/height': current_img_size[0],
+            'image_size/width': current_img_size[1],
+        }
+        if val_loss is not None:
+            payload['val/loss'] = val_loss
+        if val_top1 is not None:
+            payload['val/top1'] = val_top1
+
+        try:
+            self.wandb_module.log(payload)
+        except Exception as exc:
+            self.logger.warning(f"wandb log failed: {str(exc)}. Disabling wandb logging for the rest of training.")
+            self.wandb_enabled = False
+
+    def _finish_wandb(self, summary: Optional[Dict[str, Any]] = None) -> None:
+        """安全结束wandb运行。"""
+        if self.wandb_module is None and self.wandb_run is None:
+            return
+
+        try:
+            if summary and self.wandb_run is not None and hasattr(self.wandb_run, 'summary'):
+                self.wandb_run.summary.update(summary)
+            finish = getattr(self.wandb_module, 'finish', None)
+            if callable(finish):
+                finish()
+        except Exception as exc:
+            self.logger.warning(f"wandb finish failed: {str(exc)}")
+        finally:
+            self.wandb_enabled = False
+            self.wandb_run = None
+            self.wandb_module = None
+
+    def _recreate_dataloaders_with_size(self, img_height, img_width):
+        """使用新的图像尺寸重新创建数据加载器
+
+        参数:
+            img_height: 新的图像高度
+            img_width: 新的图像宽度
+
+        返回:
+            (train_loader, val_loader) 元组
+        """
+        # 临时修改config中的尺寸
+        original_height = self.config.img_height
+        original_width = self.config.img_width
+
+        self.config.img_height = img_height
+        self.config.img_width = img_width
+
+        # 重新创建数据加载器
+        train_loader = self._get_train_loader()
+        val_loader = self._get_val_loader()
+
+        # 恢复原始尺寸（虽然会在下次调用时再次修改）
+        self.config.img_height = original_height
+        self.config.img_width = original_width
+
+        return train_loader, val_loader
+
     def train(self, epochs=None, train_loader=None, val_loader=None, force_train: bool = False):
         """完整的训练循环，包含验证
-        
+
         参数:
             epochs: 轮次数（默认使用config.epoch）
             train_loader: 训练数据加载器（如果为None则创建）
             val_loader: 验证数据加载器（如果为None则创建）
             force_train: 是否忽略已有模型并强制从头训练
-            
+
         返回:
             包含训练结果的字典
         """
         epochs = epochs or self.config.epoch
-        
+
         # 获取训练和验证数据加载器
         train_loader = train_loader or self._get_train_loader()
         if val_loader is None:
             val_loader = self._get_val_loader()
             if val_loader is None:
                 self.logger.warning("No validation data available. Training will proceed without validation.")
+
+        # 初始化progressive resizing状态
+        current_img_size = (self.config.img_height, self.config.img_width)
         
         # Check for existing models and number of trained epochs
         start_epoch = 0
@@ -545,62 +743,104 @@ class Trainer:
         model_ema = None
         if self.config.use_ema:
             model_ema = create_model_ema(model, cfg=self.config)
-            
-        # Training loop
-        for epoch in range(start_epoch, epochs):
-            # Train for one epoch
-            train_loss, train_acc, _ = self.train_epoch(
-                model, train_loader, criterion, optimizer, epoch, train_log, scaler, model_ema, scheduler
-            )
-            
-            # Update learning rate
-            if scheduler is not None:
-                if not isinstance(scheduler, torch.optim.lr_scheduler.OneCycleLR):
-                    # For other schedulers (CosineLRScheduler, StepLR), pass epoch
-                    scheduler.step(epoch)
-                
-            # Validate if validation loader is available
-            val_loss, val_acc = 0.0, 0.0
-            if val_loader is not None:
-                val_loss, val_acc = self.validate(model, val_loader, criterion, epoch)
-                
-                # Save checkpoint if validation accuracy improved
-                is_best = val_acc > best_acc
-                best_acc = max(val_acc, best_acc)
-                
-                save_latest_model({
-                    'epoch': epoch + 1,
-                    'state_dict': model.state_dict(),
-                    'best_acc': best_acc,
-                    'optimizer': optimizer.state_dict(),
-                }, is_best, fold=0, cfg=self.config)
-                
-                # Log validation results
-                self.logger.info(f'Epoch {epoch+1}/{epochs} - Train loss: {train_loss:.4f}, acc: {train_acc:.4f} | '
-                           f'Val loss: {val_loss:.4f}, acc: {val_acc:.4f}')
-                
-                # Early stopping
-                if self.config.use_early_stopping and self.performance_metrics.should_stop(
-                    val_loss,
-                    self.config.early_stopping_patience,
-                ):
-                    self.logger.info(f"Early stopping at epoch {epoch+1}")
-                    break
-            else:
-                # Log training results when no validation
-                self.logger.info(f'Epoch {epoch+1}/{epochs} - Train loss: {train_loss:.4f}, acc: {train_acc:.4f}')
-                
-                # Save checkpoint based on training accuracy
-                is_best = train_acc > best_acc
-                best_acc = max(train_acc, best_acc)
-                
-                save_latest_model({
-                    'epoch': epoch + 1,
-                    'state_dict': model.state_dict(),
-                    'best_acc': best_acc,
-                    'optimizer': optimizer.state_dict(),
-                }, is_best, fold=0, cfg=self.config)
-        
+
+        self._init_wandb(epochs=epochs, start_epoch=start_epoch, force_train=force_train)
+
+        try:
+            # Training loop
+            for epoch in range(start_epoch, epochs):
+                # Progressive resizing: check if image size should change
+                if self.config.progressive_resizing:
+                    new_size = self._get_progressive_size(epoch)
+                    if new_size != current_img_size:
+                        self.logger.info(f"Progressive resizing: changing image size from {current_img_size} to {new_size} at epoch {epoch}")
+                        train_loader, val_loader = self._recreate_dataloaders_with_size(new_size[0], new_size[1])
+                        current_img_size = new_size
+                        # Update scheduler with new dataloader length
+                        scheduler = get_scheduler(optimizer, epochs, len(train_loader), cfg=self.config)
+
+                # Train for one epoch
+                train_loss, train_acc, train_top2 = self.train_epoch(
+                    model, train_loader, criterion, optimizer, epoch, train_log, scaler, model_ema, scheduler
+                )
+
+                # Update learning rate
+                if scheduler is not None:
+                    if not isinstance(scheduler, torch.optim.lr_scheduler.OneCycleLR):
+                        # For other schedulers (CosineLRScheduler, StepLR), pass epoch
+                        scheduler.step(epoch)
+
+                current_lr = optimizer.param_groups[0]['lr'] if optimizer.param_groups else self.config.lr
+
+                # Validate if validation loader is available
+                val_loss, val_acc = 0.0, 0.0
+                if val_loader is not None:
+                    val_loss, val_acc = self.validate(model, val_loader, criterion, epoch)
+
+                    # Save checkpoint if validation accuracy improved
+                    is_best = val_acc > best_acc
+                    best_acc = max(val_acc, best_acc)
+
+                    save_latest_model({
+                        'epoch': epoch + 1,
+                        'state_dict': model.state_dict(),
+                        'best_acc': best_acc,
+                        'optimizer': optimizer.state_dict(),
+                    }, is_best, fold=0, cfg=self.config)
+
+                    self._log_wandb_epoch(
+                        epoch=epoch + 1,
+                        train_loss=train_loss,
+                        train_top1=train_acc,
+                        train_top2=train_top2,
+                        val_loss=val_loss,
+                        val_top1=val_acc,
+                        best_acc=best_acc,
+                        lr=current_lr,
+                        current_img_size=current_img_size,
+                    )
+
+                    # Log validation results
+                    self.logger.info(f'Epoch {epoch+1}/{epochs} - Train loss: {train_loss:.4f}, acc: {train_acc:.4f} | '
+                               f'Val loss: {val_loss:.4f}, acc: {val_acc:.4f}')
+
+                    # Early stopping
+                    if self.config.use_early_stopping and self.performance_metrics.should_stop(
+                        val_loss,
+                        self.config.early_stopping_patience,
+                    ):
+                        self.logger.info(f"Early stopping at epoch {epoch+1}")
+                        break
+                else:
+                    # Log training results when no validation
+                    self.logger.info(f'Epoch {epoch+1}/{epochs} - Train loss: {train_loss:.4f}, acc: {train_acc:.4f}')
+
+                    # Save checkpoint based on training accuracy
+                    is_best = train_acc > best_acc
+                    best_acc = max(train_acc, best_acc)
+
+                    save_latest_model({
+                        'epoch': epoch + 1,
+                        'state_dict': model.state_dict(),
+                        'best_acc': best_acc,
+                        'optimizer': optimizer.state_dict(),
+                    }, is_best, fold=0, cfg=self.config)
+
+                    self._log_wandb_epoch(
+                        epoch=epoch + 1,
+                        train_loss=train_loss,
+                        train_top1=train_acc,
+                        train_top2=train_top2,
+                        best_acc=best_acc,
+                        lr=current_lr,
+                        current_img_size=current_img_size,
+                    )
+        finally:
+            self._finish_wandb({
+                'best_acc': best_acc,
+                'epochs_trained': epoch + 1 if 'epoch' in locals() else start_epoch,
+            })
+
         # Return training summary
         self.logger.info("Training completed successfully")
         return self.performance_metrics.get_summary()
@@ -690,7 +930,7 @@ class Trainer:
             sampling_threshold=self.config.sampling_threshold,
             sample_size=self.config.sample_size,
             seed=self.config.seed,
-            img_weight=self.config.img_weight,
+            img_width=self.config.img_width,
             img_height=self.config.img_height,
             use_data_aug=self.config.use_data_aug,
             enable_sampling=self.config.enable_sampling,

@@ -165,7 +165,7 @@ class DefaultConfigs:
     test_batch_size: int = 8  # 测试批次大小
     num_workers: Union[int, str] = 'auto'  # 数据加载线程数（可以是整数或 'auto'）
     img_height: int = 384  # 图像高度
-    img_weight: int = 384  # 图像宽度
+    img_width: int = 384  # 图像宽度
     num_classes: int = 59  # 类别数量
     seed: int = 888  # 随机种子
     lr: float = 3e-4  # 学习率
@@ -204,6 +204,14 @@ class DefaultConfigs:
     focal_loss_gamma: float = 2.0  # Focal Loss gamma参数
     focal_loss_alpha: float = 0.25  # Focal Loss alpha参数
 
+    # Weights & Biases 实验追踪 Experiment Tracking
+    use_wandb: bool = False  # 是否启用wandb实验追踪
+    wandb_project: str = "plants-disease-detection"  # wandb项目名称
+    wandb_entity: Optional[str] = None  # wandb团队/用户名（None则使用默认）
+    wandb_run_name: Optional[str] = None  # wandb运行名称（None则自动生成）
+    wandb_tags: List[str] = field(default_factory=list)  # wandb标签列表
+    wandb_mode: str = "online"  # wandb运行模式: online/offline/disabled
+
     # 数据增强配置 Data Augmentation Configuration
     use_mode: str = 'merge'  # 数据增强模式: 'merge', 'replace'
     merge_augmented_data: bool = True  # 是否合并增强数据和原始数据
@@ -229,7 +237,7 @@ class DefaultConfigs:
     image_validation_workers: int = 4  # 图像验证的最大线程数
 
     # 高级功能 Advanced Features
-    progressive_resizing: bool = False  # 渐进式缩放（训练循环尚未实现，暂时关闭）
+    progressive_resizing: bool = False  # 渐进式缩放（功能已实现，默认关闭以避免训练时意外改变输入尺寸）
     progressive_start_size: int = 224  # 渐进式缩放起始尺寸
     progressive_end_size: int = 380  # 渐进式缩放最终尺寸
     progressive_epochs: int = 15  # 渐进式缩放过渡轮数

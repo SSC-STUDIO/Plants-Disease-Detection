@@ -240,7 +240,7 @@ def build_transforms(
     test: bool = False,
     use_data_aug: Optional[bool] = None,
     img_height: Optional[int] = None,
-    img_weight: Optional[int] = None,
+    img_width: Optional[int] = None,
     cfg: Optional[DefaultConfigs] = None,
 ) -> T.Compose:
     """构建图像变换管道，训练/测试保持一致。
@@ -250,11 +250,11 @@ def build_transforms(
         test: 是否测试/推理模式
         use_data_aug: 是否启用数据增强（None则使用全局配置）
         img_height: 图像高度
-        img_weight: 图像宽度
+        img_width: 图像宽度
     """
     cfg = cfg or config
     img_height = img_height or cfg.img_height
-    img_weight = img_weight or cfg.img_weight
+    img_width = img_width or cfg.img_width
     use_data_aug = cfg.use_data_aug if use_data_aug is None else use_data_aug
 
     normalize = T.Normalize(
@@ -265,7 +265,7 @@ def build_transforms(
     if train and not test and use_data_aug:
         train_transforms: List[Any] = [
             T.RandomResizedCrop(
-                (img_height, img_weight),
+                (img_height, img_width),
                 scale=(0.7, 1.0),
                 ratio=(0.8, 1.25),
             ),
@@ -296,7 +296,7 @@ def build_transforms(
         return T.Compose(train_transforms)
 
     return T.Compose([
-        T.Resize((img_height, img_weight)),
+        T.Resize((img_height, img_width)),
         T.ToTensor(),
         normalize,
     ])
