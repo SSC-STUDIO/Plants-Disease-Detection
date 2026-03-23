@@ -163,7 +163,7 @@ class DefaultConfigs:
     train_batch_size: int = 8  # ConvNeXt V2 Base 384 默认使用更保守的批次大小
     val_batch_size: int = 8  # 验证批次大小
     test_batch_size: int = 8  # 测试批次大小
-    num_workers: Union[int, str] = 32  # 数据加载线程数（可以是整数或 'auto'）
+    num_workers: Union[int, str] = 'auto'  # 数据加载线程数（可以是整数或 'auto'）
     img_height: int = 384  # 图像高度
     img_weight: int = 384  # 图像宽度
     num_classes: int = 59  # 类别数量
@@ -229,7 +229,7 @@ class DefaultConfigs:
     image_validation_workers: int = 4  # 图像验证的最大线程数
 
     # 高级功能 Advanced Features
-    progressive_resizing: bool = True  # 是否使用渐进式缩放
+    progressive_resizing: bool = False  # 渐进式缩放（训练循环尚未实现，暂时关闭）
     progressive_start_size: int = 224  # 渐进式缩放起始尺寸
     progressive_end_size: int = 380  # 渐进式缩放最终尺寸
     progressive_epochs: int = 15  # 渐进式缩放过渡轮数

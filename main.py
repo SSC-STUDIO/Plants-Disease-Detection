@@ -704,8 +704,6 @@ def prepare_data(args: argparse.Namespace, cfg=None) -> Dict[str, Any]:
     force_cleanup = getattr(args, 'force_cleanup', False)
     
     # 运行数据准备
-    setup_data = _load_setup_data()
-
     result = setup_data(
         extract=extract,
         process=process, 

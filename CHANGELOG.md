@@ -1,5 +1,16 @@
 ﻿# CHANGELOG
 
+## [0.2.0] - 2026-03-22
+
+### Fixed
+- 修复 `main.py` 中 `prepare_data()` 调用不存在的 `_load_setup_data()` 导致 NameError 的问题，改为直接使用已导入的 `setup_data`。
+- 修复 `models/model.py` 中 `get_densenet169()` 使用已弃用的 `pretrained=True` 参数，改为与其他模型一致的 `_build_torchvision_model()` + weights enum 模式。
+- 移除 `dataset/data_prep.py` 中 `extract_images_directly()` 空实现桩代码及其调用点，消除无效的快速路径分支。
+
+### Changed
+- `num_workers` 默认值从硬编码的 `32` 改为 `'auto'`，自动适配不同机器的 CPU 核心数。
+- `progressive_resizing` 默认值从 `True` 改为 `False`，因为训练循环尚未实现该功能，避免配置误导。
+
 ## [0.1.9] - 2026-03-22
 
 ### Added

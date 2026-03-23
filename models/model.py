@@ -86,7 +86,8 @@ def get_densenet169(num_classes, pretrained=True):
             out = self.classifier(out)
             return out
 
-    return DenseModel(torchvision.models.densenet169(pretrained=pretrained))
+    return DenseModel(_build_torchvision_model(
+        torchvision.models.densenet169, "DenseNet169_Weights", pretrained))
 
 def get_efficientnet(num_classes, pretrained=True):
     """获取EfficientNet-B4模型，使用渐进式解冻技术

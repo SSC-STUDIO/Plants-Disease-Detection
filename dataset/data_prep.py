@@ -1559,13 +1559,8 @@ class DataPreparation:
             logger.info("Processed data already exists. Set force_data_processing=True to reprocess.")
             return
             
-        # 优先尝试直接提取图像
-        logger.info("Attempting direct image extraction from archives...")
-        if self.extract_images_directly():
-            logger.info("Direct image extraction successful.")
-            return
-            
-        logger.info("Direct extraction failed or incomplete. Falling back to standard processing...")
+        # 标准数据处理流程
+        logger.info("Starting standard data processing...")
         
         def ensure_annotation_file(filename: str, target_path: str, dataset_folder_name: str) -> bool:
             """确保注释文件存在于标准路径，必要时从其他位置复制。"""
@@ -1721,18 +1716,6 @@ class DataPreparation:
             logger.error(f"Error checking directory {directory_path}: {str(e)}")
             return False
             
-    def extract_images_directly(self) -> bool:
-        """直接从ZIP文件中提取图像到目标目录结构
-        
-        返回:
-            布尔值，指示直接提取是否成功
-        """
-        # 实现直接从ZIP文件提取图像的逻辑
-        # 这个方法在process_data中被调用
-        # 此处仅返回False，表示直接提取未实现或未成功
-        logger.info("Direct image extraction not implemented")
-        return False
-        
     def extract_datasets(self) -> bool:
         """解压和提取数据集文件
         
