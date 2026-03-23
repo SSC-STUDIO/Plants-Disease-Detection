@@ -1,5 +1,23 @@
 ﻿# CHANGELOG
 
+## [0.2.0] - 2026-03-23
+
+### Added
+- 新增 `export` 子命令，支持将训练好的模型导出为 ONNX 格式，便于部署和跨平台推理。
+- ONNX 导出支持自定义输入尺寸、opset 版本、动态批次大小和模型验证。
+- 新增 pytest 测试套件，覆盖配置默认值、模型注册/实例化、工具函数、progressive resizing 辅助逻辑，以及 `export` CLI 子命令解析。
+
+### Fixed
+- 修复 `main.py` 中 `prepare_data()` 调用不存在的 `_load_setup_data()` 导致 NameError 的问题，改为直接使用已导入的 `setup_data`。
+- 修复 `models/model.py` 中 `get_densenet169()` 使用已弃用的 `pretrained=True` 参数，改为与其他模型一致的 `_build_torchvision_model()` + weights enum 模式。
+- 移除 `dataset/data_prep.py` 中 `extract_images_directly()` 空实现桩代码及其调用点，消除无效的快速路径分支。
+- 修复 `config.py` 中 `img_weight` 字段拼写错误，重命名为 `img_width`，并同步更新所有引用该字段的代码。
+- 修正 `config.py` 中关于 `progressive_resizing` 的注释说明：该功能已在训练流程中实现，仅默认关闭。
+
+### Changed
+- `num_workers` 默认值从硬编码的 `32` 改为 `'auto'`，自动适配不同机器的 CPU 核心数。
+- `progressive_resizing` 默认值从 `True` 改为 `False`，因为该功能默认关闭可避免训练时意外改变输入尺寸。
+
 ## [0.1.9] - 2026-03-22
 
 ### Added

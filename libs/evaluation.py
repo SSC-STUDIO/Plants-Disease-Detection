@@ -150,7 +150,7 @@ def evaluate_model(
         sampling_threshold=cfg.sampling_threshold,
         sample_size=cfg.sample_size,
         seed=cfg.seed,
-        img_weight=cfg.img_weight,
+        img_width=cfg.img_width,
         img_height=cfg.img_height,
         use_data_aug=False,
         train=False,

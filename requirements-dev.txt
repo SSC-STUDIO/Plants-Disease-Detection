@@ -1,0 +1,15 @@
+# Development dependencies for Plants Disease Detection
+# Install with: pip install -r requirements-dev.txt
+
+# Testing
+pytest>=7.4.0
+pytest-cov>=4.1.0
+pytest-xdist>=3.3.0  # Parallel test execution
+
+# Code quality
+black>=23.0.0
+flake8>=6.0.0
+mypy>=1.4.0
+
+# Optional: for better test output
+pytest-sugar>=0.9.7
