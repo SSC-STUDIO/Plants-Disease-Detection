@@ -80,7 +80,8 @@ def _load_model(
         num_classes=cfg.num_classes,
         pretrained=False,
     )
-    checkpoint = torch.load(model_path, map_location=device)
+    # SECURITY FIX: Added weights_only=True to prevent arbitrary code execution
+    checkpoint = torch.load(model_path, map_location=device, weights_only=True)
     if isinstance(checkpoint, dict) and "state_dict" in checkpoint:
         model.load_state_dict(checkpoint["state_dict"])
     else:

@@ -1048,8 +1048,8 @@ def export_model(args) -> None:
         model = get_net(model_name, num_classes=cfg.num_classes, pretrained=False)
         model = model.to(device)
 
-        # 加载权重
-        checkpoint = torch.load(model_path, map_location=device)
+        # 加载权重 - SECURITY FIX: Added weights_only=True to prevent arbitrary code execution
+        checkpoint = torch.load(model_path, map_location=device, weights_only=True)
         if 'model_state_dict' in checkpoint:
             model.load_state_dict(checkpoint['model_state_dict'])
         elif 'state_dict' in checkpoint:
