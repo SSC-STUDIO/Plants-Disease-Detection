@@ -14,6 +14,9 @@ from concurrent.futures import ThreadPoolExecutor
 from utils.utils import handle_datasets, build_transforms, get_image_glob_patterns, get_image_extensions
 import concurrent.futures
 
+# 最大图像尺寸限制 (100MP, 约400MB内存)
+MAX_IMAGE_SIZE = 100_000_000
+
 # 设置日志记录器
 logger = logging.getLogger('DataLoader')
 logger.setLevel(logging.INFO)
@@ -248,11 +251,19 @@ class PlantDiseaseDataset(Dataset):
             if self.test:
                 filename = self.imgs[index]
                 img = Image.open(filename).convert('RGB')
+                # 检查图像尺寸
+                width, height = img.size
+                if width * height > MAX_IMAGE_SIZE:
+                    raise ValueError(f"Image too large: {width}x{height} ({width*height} pixels)")
                 img_tensor = self.transforms(img)
                 return img_tensor, filename
             else:
                 filename, label = self.imgs[index]
                 img = Image.open(filename).convert('RGB')
+                # 检查图像尺寸
+                width, height = img.size
+                if width * height > MAX_IMAGE_SIZE:
+                    raise ValueError(f"Image too large: {width}x{height} ({width*height} pixels)")
                 img_tensor = self.transforms(img)
                 return img_tensor, label
         except Exception as e:
