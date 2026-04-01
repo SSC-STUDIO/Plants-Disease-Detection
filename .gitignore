@@ -72,11 +72,27 @@ progress.md
 *.avi
 *.mov
 
-# 敏感信息
+# 敏感信息 - 云服务密钥保护
 .env
+.env.local
+.env.production
 .secret
 credentials.json
+*.credentials.json
 config.local.py
+cloud_config.json
+*_secrets.json
+*_keys.json
+.aws/
+.azure/
+.gcp/
+service-account*.json
+*-service-account.json
+secrets/
+keys/
+
+# 旧密钥文件（已泄露）
+cloud_config.json
 
 # 实验和测试
 experiments/
