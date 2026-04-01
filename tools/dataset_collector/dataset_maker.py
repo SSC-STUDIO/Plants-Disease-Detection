@@ -14,9 +14,47 @@ import math
 from PIL import Image, ImageStat
 import ssl
 import urllib.request
+import ipaddress
+from urllib.parse import urlparse
 
 logger = logging.getLogger('DatasetMaker')
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}
+
+
+def validate_url(url: str) -> str:
+    """验证URL，防止SSRF攻击
+    
+    参数:
+        url: 要验证的URL
+        
+    返回:
+        验证通过的URL
+        
+    抛出:
+        ValueError: 如果URL指向私有IP或无效
+    """
+    if not url or not isinstance(url, str):
+        raise ValueError("Invalid URL: empty or not a string")
+    
+    parsed = urlparse(url)
+    hostname = parsed.hostname
+    
+    if not hostname:
+        raise ValueError(f"Invalid URL: no hostname found in {url}")
+    
+    # 检查是否为IP地址
+    try:
+        ip = ipaddress.ip_address(hostname)
+        # 如果是IP，检查是否为私有IP
+        if ip.is_private or ip.is_loopback or ip.is_reserved or ip.is_multicast:
+            raise ValueError(f"Private IP not allowed: {hostname}")
+    except ValueError as e:
+        if "Private IP not allowed" in str(e):
+            raise
+        # 不是IP地址，是域名，允许通过
+        pass
+    
+    return url
 
 class DatasetMaker:
     """数据集生成器类，支持从本地数据和在线数据生成数据集"""
@@ -570,6 +608,13 @@ class DatasetMaker:
                     # 跳过数据URI（base64编码的图片）
                     if img_url.startswith("data:"):
                         continue
+                    
+                    # 验证URL防止SSRF攻击
+                    try:
+                        validate_url(img_url)
+                    except ValueError as e:
+                        logger.warning(f"URL验证失败，跳过: {str(e)}")
+                        continue
                         
                     # 创建文件名
                     file_name = f"{i:03d}.jpg"
@@ -715,6 +760,13 @@ class DatasetMaker:
             # 下载图片
             for i, img_url in enumerate(img_urls):
                 try:
+                    # 验证URL防止SSRF攻击
+                    try:
+                        validate_url(img_url)
+                    except ValueError as e:
+                        logger.warning(f"URL验证失败，跳过: {str(e)}")
+                        continue
+                    
                     # 创建文件名
                     file_name = f"bing_{i:03d}.jpg"
                     file_path = os.path.join(output_dir, file_name)
@@ -770,11 +822,13 @@ class DatasetMaker:
         """
         for retry in range(max_retries):
             try:
-                # 创建请求时禁用SSL验证
-                context = ssl._create_unverified_context()
+                # 验证URL防止SSRF攻击
+                validate_url(img_url)
+                
+                # 使用标准SSL上下文（验证启用）
                 req = urllib.request.Request(img_url, headers=headers)
                 
-                with urllib.request.urlopen(req, context=context, timeout=10) as response:
+                with urllib.request.urlopen(req, timeout=10) as response:
                     img_data = response.read()
                     
                     # 验证图片数据是否有效
@@ -1054,12 +1108,23 @@ class DatasetMaker:
                         # 如果没有可用的URL，构建一个（可能不准确）
                         img_url = f"https://live.staticflickr.com/{photo['server']}/{photo['id']}_{photo['secret']}.jpg"
                     
+                    # 验证URL防止SSRF攻击
+                    try:
+                        validate_url(img_url)
+                    except ValueError as e:
+                        logger.warning(f"URL验证失败，跳过: {str(e)}")
+                        continue
+                    
                     # 创建文件名
                     file_name = f"flickr_{i:03d}.jpg"
                     file_path = os.path.join(output_dir, file_name)
                     
-                    # 下载图片
-                    urllib.request.urlretrieve(img_url, file_path)
+                    # 下载图片（使用验证后的安全请求）
+                    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+                    req = urllib.request.Request(img_url, headers=headers)
+                    with urllib.request.urlopen(req, timeout=10) as response:
+                        with open(file_path, 'wb') as f:
+                            f.write(response.read())
                     
                     # 验证图片是否有效
                     try:
@@ -1177,6 +1242,13 @@ class DatasetMaker:
             # 下载图片
             for i, img_url in enumerate(img_urls):
                 try:
+                    # 验证URL防止SSRF攻击
+                    try:
+                        validate_url(img_url)
+                    except ValueError as e:
+                        logger.warning(f"URL验证失败，跳过: {str(e)}")
+                        continue
+                    
                     # 创建文件名
                     file_name = f"flickr_scrape_{i:03d}.jpg"
                     file_path = os.path.join(output_dir, file_name)
