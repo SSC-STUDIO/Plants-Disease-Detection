@@ -695,7 +695,7 @@ class Trainer:
         # Load weights if we're continuing training
         if start_epoch > 0:
             try:
-                checkpoint = torch.load(model_path, map_location=self.device)
+                checkpoint = torch.load(model_path, map_location=self.device, weights_only=True)
                 if "state_dict" in checkpoint:
                     model.load_state_dict(checkpoint["state_dict"])
                     if "optimizer" in checkpoint:
