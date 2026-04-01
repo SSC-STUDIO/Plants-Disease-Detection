@@ -142,9 +142,10 @@ class InferenceManager:
             pretrained=False,
         )
         
-        # 加载权重
+        # 加载权重 - SECURITY FIX: Added weights_only=True to prevent arbitrary code execution
         try:
-            checkpoint = torch.load(model_path, map_location=self.device)
+            # PyTorch 2.0+ supports weights_only parameter to prevent deserialization attacks
+            checkpoint = torch.load(model_path, map_location=self.device, weights_only=True)
             
             # 处理不同的检查点格式
             if "state_dict" in checkpoint:

@@ -653,7 +653,8 @@ class Trainer:
         if not force_train and (os.path.exists(checkpoint_path) or os.path.exists(best_model_path)):
             model_path = best_model_path if os.path.exists(best_model_path) else checkpoint_path
             try:
-                checkpoint = torch.load(model_path, map_location=self.device)
+                # SECURITY FIX: Added weights_only=True to prevent arbitrary code execution
+                checkpoint = torch.load(model_path, map_location=self.device, weights_only=True)
                 start_epoch = checkpoint.get('epoch', 0)
                 best_acc = checkpoint.get('best_acc', 0.0)
                 
