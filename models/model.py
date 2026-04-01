@@ -119,8 +119,8 @@ def get_efficientnetv2(num_classes, pretrained=True):
     Args:
         pretrained (bool): 是否使用预训练权重，默认为True
     """
-    # 禁用SSL验证
-    ssl._create_default_https_context = ssl._create_unverified_context
+    # SSL验证保持默认启用状态以确保安全
+    # 如需使用特定证书，可通过环境变量 SSL_CERT_FILE 配置
     
     # 设置环境变量
     os.environ['TORCH_HOME'] = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'checkpoints', 'pretrained')
