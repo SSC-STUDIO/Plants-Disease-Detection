@@ -86,8 +86,12 @@ class Trainer:
         logger.addHandler(console_handler)
         logger.propagate = False
         
-        # 设置日志级别
-        logger.setLevel(logging.DEBUG)
+        # 设置日志级别 - SECURITY FIX: 从环境变量读取，生产环境默认为INFO
+        log_level = os.environ.get('LOG_LEVEL', 'INFO')
+        if log_level.upper() == 'DEBUG':
+            logger.setLevel(logging.DEBUG)
+        else:
+            logger.setLevel(logging.INFO)
         
         return logger
         
