@@ -45,14 +45,36 @@ def validate_url(url: str) -> str:
     # 检查是否为IP地址
     try:
         ip = ipaddress.ip_address(hostname)
-        # 如果是IP，检查是否为私有IP
-        if ip.is_private or ip.is_loopback or ip.is_reserved or ip.is_multicast:
+        # 如果是IP，检查是否为私有IP、回环IP、链路本地IP或保留IP
+        if ip.is_private or ip.is_loopback or ip.is_reserved or ip.is_multicast or ip.is_link_local:
             raise ValueError(f"Private IP not allowed: {hostname}")
     except ValueError as e:
         if "Private IP not allowed" in str(e):
             raise
-        # 不是IP地址，是域名，允许通过
+        # 不是IP地址，是域名，继续检查是否是危险的元数据域名
         pass
+    
+    # 检查是否是元数据域名或本地主机名（防止DNS重绑定攻击）
+    blocked_hosts = [
+        '169.254.169.254',      # AWS/GCP/Azure 元数据服务
+        'metadata.google.internal',  # GCP 元数据
+        'metadata',             # 通用元数据
+        'localhost',            # 本地主机
+        '127.0.0.1',           # 回环地址
+        '0.0.0.0',             # 任意地址
+        '::1',                 # IPv6 回环
+        '::',                  # IPv6 任意地址
+        'ip6-localhost',       # IPv6 本地主机
+        'ip6-loopback',        # IPv6 回环
+    ]
+    
+    # 检查精确匹配
+    if hostname.lower() in blocked_hosts:
+        raise ValueError(f"Access to private/internal URL not allowed: {hostname}")
+    
+    # 检查是否是localhost的子域名（如 localhost.example.com）
+    if hostname.lower().endswith('.localhost'):
+        raise ValueError(f"Access to private/internal URL not allowed: {hostname}")
     
     return url
 
@@ -1455,3 +1477,82 @@ class DatasetMaker:
             for chunk in iter(lambda: f.read(1024 * 1024), b""):
                 hasher.update(chunk)
         return hasher.hexdigest()
+
+
+def test_ssrf_protection():
+    """测试SSRF防护功能
+    
+    验证以下场景：
+    1. 私有IP被阻止
+    2. 公网IP允许
+    3. 元数据域名被阻止
+    4. 正常域名允许
+    """
+    import sys
+    
+    print("=" * 60)
+    print("SSRF防护测试")
+    print("=" * 60)
+    
+    test_cases = [
+        # (URL, 应该被阻止, 描述)
+        ('http://192.168.1.1/test', True, '私有IP - 192.168.x.x'),
+        ('http://10.0.0.1/test', True, '私有IP - 10.x.x.x'),
+        ('http://172.16.0.1/test', True, '私有IP - 172.16-31.x.x'),
+        ('http://127.0.0.1/test', True, '回环地址 - 127.0.0.1'),
+        ('http://169.254.169.254/latest/meta-data/', True, '元数据服务 - AWS/GCP/Azure'),
+        ('http://metadata.google.internal/test', True, 'GCP元数据域名'),
+        ('http://metadata/test', True, '通用元数据域名'),
+        ('http://localhost/test', True, '本地主机'),
+        ('http://localhost:8080/test', True, '本地主机带端口'),
+        ('http://sub.localhost/test', True, '本地主机子域名'),
+        ('http://0.0.0.0/test', True, '任意地址'),
+        ('http://[::1]/test', True, 'IPv6回环'),
+        ('http://8.8.8.8/test', False, '公网IP - Google DNS'),
+        ('http://1.1.1.1/test', False, '公网IP - Cloudflare DNS'),
+        ('http://example.com/test', False, '正常域名'),
+        ('https://www.google.com/images', False, '正常HTTPS域名'),
+        ('http://github.com/test', False, '正常域名 - GitHub'),
+    ]
+    
+    passed = 0
+    failed = 0
+    
+    for url, should_block, description in test_cases:
+        try:
+            validate_url(url)
+            # 如果没有抛出异常，说明URL被允许
+            if should_block:
+                print(f"❌ FAIL: {description}")
+                print(f"   URL: {url}")
+                print(f"   期望: 被阻止, 实际: 被允许")
+                failed += 1
+            else:
+                print(f"✅ PASS: {description}")
+                passed += 1
+        except ValueError as e:
+            # 如果抛出ValueError，说明URL被阻止
+            if should_block:
+                print(f"✅ PASS: {description}")
+                passed += 1
+            else:
+                print(f"❌ FAIL: {description}")
+                print(f"   URL: {url}")
+                print(f"   期望: 被允许, 实际: 被阻止")
+                print(f"   错误: {e}")
+                failed += 1
+    
+    print("=" * 60)
+    print(f"测试结果: {passed} 通过, {failed} 失败")
+    print("=" * 60)
+    
+    if failed > 0:
+        sys.exit(1)
+    else:
+        print("✅ 所有SSRF防护测试通过！")
+        return True
+
+
+if __name__ == "__main__":
+    # 运行SSRF防护测试
+    test_ssrf_protection()
