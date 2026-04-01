@@ -332,16 +332,17 @@ def get_optimizer(model: nn.Module, name: str = 'adamw', cfg: Optional[DefaultCo
             weight_decay=cfg.weight_decay
         )
     elif name == 'ranger':
-        # Ranger优化器（RAdam + Lookahead）
+        # Ranger优化器 - 使用 torch_optimizer 库中的实现
         try:
-            from ranger_adabelief import Ranger
-            optimizer = Ranger(
+            import torch_optimizer as to
+            optimizer = to.Ranger(
                 model.parameters(), 
                 lr=cfg.lr, 
                 weight_decay=cfg.weight_decay
             )
+            logger.info("Using torch_optimizer.Ranger (RAdam + Lookahead)")
         except ImportError:
-            logger.warning("Ranger optimizer not available, falling back to AdamW")
+            logger.warning("torch_optimizer not available, falling back to AdamW")
             optimizer = torch.optim.AdamW(
                 model.parameters(), 
                 lr=cfg.lr, 
@@ -353,11 +354,11 @@ def get_optimizer(model: nn.Module, name: str = 'adamw', cfg: Optional[DefaultCo
     # 如果使用Lookahead，包装优化器
     if cfg.use_lookahead and name != 'ranger':
         try:
-            from lookahead import Lookahead
-            optimizer = Lookahead(optimizer, k=5, alpha=0.5)
-            logger.info("Applied Lookahead wrapper to optimizer")
+            import torch_optimizer as to
+            optimizer = to.Lookahead(optimizer, k=5, alpha=0.5)
+            logger.info("Applied Lookahead wrapper to optimizer (via torch_optimizer)")
         except ImportError:
-            logger.warning("Lookahead not available")
+            logger.warning("torch_optimizer.Lookahead not available")
     
     return optimizer
 

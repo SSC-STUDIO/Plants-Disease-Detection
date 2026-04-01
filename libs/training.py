@@ -16,6 +16,15 @@ from tqdm import tqdm
 from torch.cuda.amp import autocast, GradScaler
 from typing import Dict, Optional, Any
 from utils.utils import ModelEmaV2
+from libs.training_helpers import (
+    validate_batch, apply_augmentation,
+    forward_backward_amp, forward_backward_standard,
+    cleanup_memory, format_error_message
+)
+from libs.training_checkpoint import (
+    load_training_state, load_model_weights, setup_model,
+    setup_optimizer_state, log_epoch_results
+)
 
 class Trainer:
     """训练管理器类，封装所有训练功能"""
@@ -156,7 +165,6 @@ class Trainer:
         返回:
             训练损失和准确率
         """
-        # Create a logger if not provided
         if log is None:
             log = init_logger(f'train_epoch_{epoch}.log', cfg=self.config)
             
@@ -169,21 +177,15 @@ class Trainer:
 
         error_files = []
         batch_times = []
-        
-        # 强制初始垃圾回收
-        import gc
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            
-        # 添加异常计数器和最大尝试次数
         error_count = 0
-        max_errors = 50  # 允许的最大连续错误数
         consecutive_errors = 0
+        max_errors = 50
+        
+        import gc
+        cleanup_memory(self.device)
         
         for iter, batch in enumerate(progress_bar):
             try:
-                # 检查是否应该终止训练（如果连续错误过多）
                 if consecutive_errors >= max_errors:
                     log.write(f"Too many consecutive errors ({consecutive_errors}), stopping training\n")
                     self.logger.error(f"Too many consecutive errors ({consecutive_errors}), stopping training")
@@ -191,96 +193,30 @@ class Trainer:
                     
                 batch_start = timer()
                 
-                # Ensure batch is valid
-                if len(batch) != 2:
-                    log.write(f"Skipping error batch in iteration {iter}\n")
-                    consecutive_errors += 1
-                    continue
-                    
-                input, target = batch
-                
-                # Ensure data is valid
-                if input is None or len(input) == 0:
-                    log.write(f"Skipping empty input in iteration {iter}\n")
+                # Validate batch
+                input_tensor, target, is_valid = validate_batch(batch, iter, log, self.device)
+                if not is_valid:
                     consecutive_errors += 1
                     continue
                 
-                # 检查输入张量是否有空值或无穷大
-                if torch.isnan(input).any() or torch.isinf(input).any():
-                    log.write(f"Skipping batch with NaN or Inf values in iteration {iter}\n")
-                    consecutive_errors += 1
-                    continue
-                    
-                input = input.to(self.device)
-                target = torch.tensor(target).to(self.device)
+                # Apply augmentation
+                input_tensor, target_a, target_b, lam, use_mixup = apply_augmentation(
+                    input_tensor, target, self.config, iter, log
+                )
                 
-                # Apply Mixup or CutMix data augmentation
-                if self.config.use_mixup:
-                    try:
-                        # Randomly choose between Mixup and CutMix
-                        r = np.random.rand(1)
-                        if r < self.config.cutmix_prob:
-                            # Use CutMix
-                            input, target_a, target_b, lam = cutmix_data(input, target, self.config.mixup_alpha)
-                            use_mixup = True
-                        else:
-                            # Use Mixup
-                            input, target_a, target_b, lam = mixup_data(input, target, self.config.mixup_alpha)
-                            use_mixup = True
-                    except Exception as e:
-                        log.write(f"Error applying mixup/cutmix in iteration {iter}: {str(e)}, continuing without augmentation\n")
-                        use_mixup = False
-                else:
-                    use_mixup = False
-                
-                # Use mixed precision training
+                # Forward and backward pass
                 if self.config.use_amp and scaler is not None:
-                    with autocast():
-                        # Forward pass
-                        output = model(input)
-                        
-                        # Calculate loss
-                        if use_mixup:
-                            loss = mixup_criterion(criterion, output, target_a, target_b, lam)
-                        else:
-                            loss = criterion(output, target)
-                    
-                    # Backward pass (with gradient scaling)
-                    optimizer.zero_grad()
-                    scaler.scale(loss).backward()
-                    
-                    # Gradient clipping
-                    if self.config.gradient_clip_val > 0:
-                        scaler.unscale_(optimizer)
-                        torch.nn.utils.clip_grad_norm_(model.parameters(), self.config.gradient_clip_val)
-                    
-                    scaler.step(optimizer)
-                    scaler.update()
-                    if isinstance(scheduler, torch.optim.lr_scheduler.OneCycleLR):
-                        scheduler.step()
+                    loss, output = forward_backward_amp(
+                        model, input_tensor, target, target_a, target_b, lam,
+                        criterion, optimizer, scaler, scheduler, self.config, use_mixup
+                    )
                 else:
-                    # Forward pass
-                    output = model(input)
-                    
-                    # Calculate loss
-                    if use_mixup:
-                        loss = mixup_criterion(criterion, output, target_a, target_b, lam)
-                    else:
-                        loss = criterion(output, target)
-                    
-                    # Backward pass
-                    optimizer.zero_grad()
-                    loss.backward()
-                    
-                    # Gradient clipping
-                    if self.config.gradient_clip_val > 0:
-                        torch.nn.utils.clip_grad_norm_(model.parameters(), self.config.gradient_clip_val)
-                    
-                    optimizer.step()
-                    if isinstance(scheduler, torch.optim.lr_scheduler.OneCycleLR):
-                        scheduler.step()
+                    loss, output = forward_backward_standard(
+                        model, input_tensor, target, target_a, target_b, lam,
+                        criterion, optimizer, scheduler, self.config, use_mixup
+                    )
                 
-                # Update EMA model
+                # Update EMA
                 if model_ema is not None:
                     try:
                         update_ema(model_ema, model, iter)
@@ -288,21 +224,16 @@ class Trainer:
                         log.write(f"Error updating EMA in iteration {iter}: {str(e)}\n")
                 
                 # Calculate metrics
-                if use_mixup:
-                    # For Mixup, use the first label to calculate accuracy (approximation)
-                    precision1_train, precision2_train = accuracy(output, target_a, topk=(1, 2))
-                else:
-                    precision1_train, precision2_train = accuracy(output, target, topk=(1, 2))
+                from utils.utils import accuracy
+                acc_target = target_a if use_mixup else target
+                precision1_train, precision2_train = accuracy(output, acc_target, topk=(1, 2))
                     
-                train_losses.update(loss.item(), input.size(0))
-                train_top1.update(precision1_train.item(), input.size(0))
-                train_top2.update(precision2_train.item(), input.size(0))
+                train_losses.update(loss.item(), input_tensor.size(0))
+                train_top1.update(precision1_train.item(), input_tensor.size(0))
+                train_top2.update(precision2_train.item(), input_tensor.size(0))
                 
-                # Calculate batch time
                 batch_time = timer() - batch_start
                 batch_times.append(batch_time)
-                
-                # 重置连续错误计数器
                 consecutive_errors = 0
                 
                 # Update progress bar
@@ -313,19 +244,15 @@ class Trainer:
                     'batch_time': f'{np.mean(batch_times[-100:]):.3f}s'
                 })
                 
-                # Monitor memory usage
-                if iter % 10 == 0:  # Check every 10 batches
+                # Monitor memory
+                if iter % 10 == 0:
                     self.memory_tracker.update()
                     if self.memory_tracker.should_warn():
                         self.logger.warning(self.memory_tracker.get_warning())
                 
-                # 周期性清理内存
-                if iter % 100 == 0:  # 每100个批次进行一次垃圾回收
-                    gc.collect()
-                    if torch.cuda.is_available():
-                        torch.cuda.empty_cache()
+                if iter % 100 == 0:
+                    cleanup_memory(self.device)
                 
-                # Free memory
                 del output
                 if self.device.type == 'cuda':
                     torch.cuda.empty_cache()
@@ -333,12 +260,9 @@ class Trainer:
             except Exception as e:
                 consecutive_errors += 1
                 error_count += 1
-                if hasattr(batch, '__getitem__') and len(batch) > 1 and isinstance(batch[1], list) and len(batch[1]) > 0:
-                    # Record error files
-                    error_files.extend(batch[1])
-                    log.write(f"Error in training iteration {iter}: {str(e)} - these files will be skipped in the future\n")
-                else:
-                    log.write(f"Error in training iteration {iter}: {str(e)}\n")
+                msg, files = format_error_message(e, batch, iter)
+                error_files.extend(files)
+                log.write(msg + "\n")
                 continue
                 
         if error_files:
@@ -347,14 +271,9 @@ class Trainer:
         if error_count > 0:
             log.write(f"Total errors in this epoch: {error_count}\n")
         
-        # 最终清理内存
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        cleanup_memory(self.device)
         
-        # Update performance metrics
         avg_batch_time = float(np.mean(batch_times)) if batch_times else 0.0
-
         self.performance_metrics.update_epoch_metrics(
             epoch=epoch,
             loss=train_losses.avg,
@@ -644,103 +563,51 @@ class Trainer:
         # 初始化progressive resizing状态
         current_img_size = (self.config.img_height, self.config.img_width)
         
-        # Check for existing models and number of trained epochs
-        start_epoch = 0
-        best_acc = 0.0
+        # 加载检查点状态
         checkpoint_path = os.path.join(self.config.weights, self.config.model_name, "0", "_latest_model.pth.tar")
         best_model_path = os.path.join(self.config.best_weights, self.config.model_name, "0", "best_model.pth.tar")
         
-        if not force_train and (os.path.exists(checkpoint_path) or os.path.exists(best_model_path)):
-            model_path = best_model_path if os.path.exists(best_model_path) else checkpoint_path
-            try:
-                # SECURITY FIX: Added weights_only=True to prevent arbitrary code execution
-                checkpoint = torch.load(model_path, map_location=self.device, weights_only=True)
-                start_epoch = checkpoint.get('epoch', 0)
-                best_acc = checkpoint.get('best_acc', 0.0)
-                
-                if start_epoch >= epochs:
-                    self.logger.info(f"Model already trained for {start_epoch} epochs (configured: {epochs})")
-                    return {"completed": True, "epochs_trained": start_epoch, "best_acc": best_acc}
-                else:
-                    self.logger.info(f"Continuing training from epoch {start_epoch}/{epochs}")
-            except Exception as e:
-                self.logger.warning(f"Error loading existing checkpoint: {str(e)}. Starting from epoch 0.")
-                start_epoch = 0
-        elif force_train:
-            self.logger.info("Force training enabled: ignoring existing checkpoints and starting from epoch 0.")
-        
-        # Setup for training
-        use_pretrained_backbone = self.config.pretrained and start_epoch == 0
-        model = get_net(
-            model_name=self.config.model_name,
-            num_classes=self.config.num_classes,
-            pretrained=use_pretrained_backbone,
+        start_epoch, best_acc, model_path = load_training_state(
+            checkpoint_path, best_model_path, self.device, epochs, force_train, self.logger
         )
-        if use_pretrained_backbone:
-            self.logger.info("Initializing model with pretrained backbone weights")
-        else:
-            self.logger.info("Skipping pretrained backbone initialization for resumed training")
-
-        if self.config.use_gradient_checkpointing:
-            grad_checkpointing_setter = getattr(model, "set_grad_checkpointing", None)
-            if callable(grad_checkpointing_setter):
-                try:
-                    grad_checkpointing_setter(enable=True)
-                except TypeError:
-                    grad_checkpointing_setter(True)
-                self.logger.info("Enabled model gradient checkpointing")
-            else:
-                self.logger.info("Gradient checkpointing requested, but model does not expose set_grad_checkpointing()")
         
-        # Load weights if we're continuing training
-        if start_epoch > 0:
-            try:
-                checkpoint = torch.load(model_path, map_location=self.device, weights_only=True)
-                if "state_dict" in checkpoint:
-                    model.load_state_dict(checkpoint["state_dict"])
-                    if "optimizer" in checkpoint:
-                        optimizer_state = checkpoint["optimizer"]
-                else:
-                    model.load_state_dict(checkpoint)
-                self.logger.info(f"Loaded weights from {model_path}")
-            except Exception as e:
-                self.logger.error(f"Failed to load weights: {str(e)}. Starting with fresh model.")
+        if start_epoch >= epochs and not force_train:
+            return {"completed": True, "epochs_trained": start_epoch, "best_acc": best_acc}
         
-        # 确保模型和数据都转移到正确的设备
-        model = model.to(self.device)
-        self.logger.info(f"Model moved to {self.device}")
+        # 设置模型
+        model = setup_model(self.config, self.device, start_epoch, self.logger)
         
-        # 验证CUDA是否可用
+        # 加载权重（如果是继续训练）
+        if start_epoch > 0 and model_path:
+            load_model_weights(model, model_path, self.device, self.logger)
+        
+        # 验证CUDA
         if torch.cuda.is_available():
             self.logger.info(f"CUDA device count: {torch.cuda.device_count()}")
             self.logger.info(f"Current CUDA device: {torch.cuda.current_device()}")
             self.logger.info(f"CUDA device name: {torch.cuda.get_device_name(0)}")
         
-        # Create a detailed training log
+        # 创建日志
         train_log = init_logger('train_detailed.log', cfg=self.config)
         self.logger.info("Training started")
         
-        # Get loss function and optimizer
+        # 获取损失函数和优化器
         criterion = get_loss_function(self.device, self.config)
         optimizer = get_optimizer(model, self.config.optimizer, cfg=self.config)
         
-        # Restore optimizer state if continuing training
-        if start_epoch > 0 and 'optimizer_state' in locals():
-            try:
-                optimizer.load_state_dict(optimizer_state)
-                self.logger.info("Restored optimizer state")
-            except Exception as e:
-                self.logger.warning(f"Failed to restore optimizer state: {str(e)}")
+        # 恢复优化器状态
+        if start_epoch > 0:
+            setup_optimizer_state(optimizer, start_epoch, model_path, self.device, self.logger)
         
-        # Set up learning rate scheduler
+        # 设置学习率调度器
         scheduler = get_scheduler(optimizer, epochs, len(train_loader), cfg=self.config)
         
-        # Initialize mixed precision training
+        # 设置混合精度训练
         scaler = None
         if self.config.use_amp and self.device.type == 'cuda':
             scaler = GradScaler()
             
-        # Create model EMA
+        # 创建EMA模型
         model_ema = None
         if self.config.use_ema:
             model_ema = create_model_ema(model, cfg=self.config)
@@ -748,101 +615,72 @@ class Trainer:
         self._init_wandb(epochs=epochs, start_epoch=start_epoch, force_train=force_train)
 
         try:
-            # Training loop
+            # 训练循环
             for epoch in range(start_epoch, epochs):
-                # Progressive resizing: check if image size should change
+                # Progressive resizing
                 if self.config.progressive_resizing:
                     new_size = self._get_progressive_size(epoch)
                     if new_size != current_img_size:
-                        self.logger.info(f"Progressive resizing: changing image size from {current_img_size} to {new_size} at epoch {epoch}")
+                        self.logger.info(f"Progressive resizing: {current_img_size} -> {new_size} at epoch {epoch}")
                         train_loader, val_loader = self._recreate_dataloaders_with_size(new_size[0], new_size[1])
                         current_img_size = new_size
-                        # Update scheduler with new dataloader length
                         scheduler = get_scheduler(optimizer, epochs, len(train_loader), cfg=self.config)
 
-                # Train for one epoch
+                # 训练一个epoch
                 train_loss, train_acc, train_top2 = self.train_epoch(
                     model, train_loader, criterion, optimizer, epoch, train_log, scaler, model_ema, scheduler
                 )
 
-                # Update learning rate
-                if scheduler is not None:
-                    if not isinstance(scheduler, torch.optim.lr_scheduler.OneCycleLR):
-                        # For other schedulers (CosineLRScheduler, StepLR), pass epoch
-                        scheduler.step(epoch)
+                # 更新学习率
+                if scheduler is not None and not isinstance(scheduler, torch.optim.lr_scheduler.OneCycleLR):
+                    scheduler.step(epoch)
 
                 current_lr = optimizer.param_groups[0]['lr'] if optimizer.param_groups else self.config.lr
 
-                # Validate if validation loader is available
+                # 验证
                 val_loss, val_acc = 0.0, 0.0
                 if val_loader is not None:
                     val_loss, val_acc = self.validate(model, val_loader, criterion, epoch)
-
-                    # Save checkpoint if validation accuracy improved
                     is_best = val_acc > best_acc
                     best_acc = max(val_acc, best_acc)
-
-                    save_latest_model({
-                        'epoch': epoch + 1,
-                        'state_dict': model.state_dict(),
-                        'best_acc': best_acc,
-                        'optimizer': optimizer.state_dict(),
-                    }, is_best, fold=0, cfg=self.config)
-
-                    self._log_wandb_epoch(
-                        epoch=epoch + 1,
-                        train_loss=train_loss,
-                        train_top1=train_acc,
-                        train_top2=train_top2,
-                        val_loss=val_loss,
-                        val_top1=val_acc,
-                        best_acc=best_acc,
-                        lr=current_lr,
-                        current_img_size=current_img_size,
-                    )
-
-                    # Log validation results
-                    self.logger.info(f'Epoch {epoch+1}/{epochs} - Train loss: {train_loss:.4f}, acc: {train_acc:.4f} | '
-                               f'Val loss: {val_loss:.4f}, acc: {val_acc:.4f}')
-
-                    # Early stopping
-                    if self.config.use_early_stopping and self.performance_metrics.should_stop(
-                        val_loss,
-                        self.config.early_stopping_patience,
-                    ):
-                        self.logger.info(f"Early stopping at epoch {epoch+1}")
-                        break
+                    log_epoch_results(self.logger, epoch, epochs, train_loss, train_acc, val_loss, val_acc)
                 else:
-                    # Log training results when no validation
-                    self.logger.info(f'Epoch {epoch+1}/{epochs} - Train loss: {train_loss:.4f}, acc: {train_acc:.4f}')
-
-                    # Save checkpoint based on training accuracy
                     is_best = train_acc > best_acc
                     best_acc = max(train_acc, best_acc)
+                    log_epoch_results(self.logger, epoch, epochs, train_loss, train_acc)
 
-                    save_latest_model({
-                        'epoch': epoch + 1,
-                        'state_dict': model.state_dict(),
-                        'best_acc': best_acc,
-                        'optimizer': optimizer.state_dict(),
-                    }, is_best, fold=0, cfg=self.config)
+                # 保存检查点
+                save_latest_model({
+                    'epoch': epoch + 1,
+                    'state_dict': model.state_dict(),
+                    'best_acc': best_acc,
+                    'optimizer': optimizer.state_dict(),
+                }, is_best, fold=0, cfg=self.config)
 
-                    self._log_wandb_epoch(
-                        epoch=epoch + 1,
-                        train_loss=train_loss,
-                        train_top1=train_acc,
-                        train_top2=train_top2,
-                        best_acc=best_acc,
-                        lr=current_lr,
-                        current_img_size=current_img_size,
-                    )
+                # 记录wandb
+                self._log_wandb_epoch(
+                    epoch=epoch + 1,
+                    train_loss=train_loss,
+                    train_top1=train_acc,
+                    train_top2=train_top2,
+                    val_loss=val_loss if val_loader else None,
+                    val_top1=val_acc if val_loader else None,
+                    best_acc=best_acc,
+                    lr=current_lr,
+                    current_img_size=current_img_size,
+                )
+
+                # 早停
+                if val_loader and self.config.use_early_stopping and \
+                   self.performance_metrics.should_stop(val_loss, self.config.early_stopping_patience):
+                    self.logger.info(f"Early stopping at epoch {epoch+1}")
+                    break
         finally:
             self._finish_wandb({
                 'best_acc': best_acc,
                 'epochs_trained': epoch + 1 if 'epoch' in locals() else start_epoch,
             })
 
-        # Return training summary
         self.logger.info("Training completed successfully")
         return self.performance_metrics.get_summary()
     
