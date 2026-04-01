@@ -2,11 +2,11 @@
 PyQt6>=6.4.0
 
 # Image processing
-Pillow>=9.2.0
+Pillow>=11.0.0
 opencv-python>=4.5.0
 
 # Web requests and APIs
-requests>=2.28.1
+requests>=2.32.0
 python-dotenv>=0.21.0
 flickrapi>=2.4.0
 
