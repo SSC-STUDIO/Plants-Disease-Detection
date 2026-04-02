@@ -13,6 +13,20 @@ from utils.utils import MyEncoder, build_transforms, get_image_extensions, is_im
 from config import config
 from models.model import get_net
 
+# SECURITY FIX: Import security modules for image validation and model integrity
+from libs.image_security import (
+    SecureImageLoader, 
+    ImageSecurityError, 
+    ImageTooLargeError,
+    secure_load_image,
+    validate_image_safe
+)
+from libs.model_integrity import (
+    ModelIntegrityVerifier,
+    verify_model_before_loading,
+    register_trained_model
+)
+
 
 def _infer_model_name(model_path: str) -> Optional[str]:
     path_norm = model_path.replace("\\", "/")
@@ -42,6 +56,8 @@ class InferenceManager:
         model_name: Optional[str] = None,
         logger=None,
         cfg=None,
+        verify_model_integrity: bool = True,  # SECURITY FIX: Enable model integrity verification by default
+        strict_image_validation: bool = True,  # SECURITY FIX: Enable strict image validation by default
     ):
         """初始化推理管理器
         
@@ -50,6 +66,8 @@ class InferenceManager:
             device: 使用的设备('cuda', 'cpu'或None表示自动检测)
             model_name: 模型名称（覆盖默认配置）
             logger: 可选的日志记录器实例
+            verify_model_integrity: 是否验证模型完整性
+            strict_image_validation: 是否启用严格的图像验证
         """
         self.config = cfg or config
         self.model_path = model_path
@@ -57,6 +75,16 @@ class InferenceManager:
         self.model = None
         self.model_name = model_name
         self.logger = logger or self._setup_logger()
+        
+        # SECURITY FIX: Initialize security components
+        self.verify_model_integrity = verify_model_integrity
+        self.strict_image_validation = strict_image_validation
+        self.secure_image_loader = SecureImageLoader(
+            max_pixels=self.config.safe_max_image_pixels if hasattr(self.config, 'safe_max_image_pixels') else 100_000_000,
+            max_dimension=self.config.safe_max_image_dimension if hasattr(self.config, 'safe_max_image_dimension') else 10000,
+            max_file_size=self.config.safe_max_file_size if hasattr(self.config, 'safe_max_file_size') else 100 * 1024 * 1024
+        )
+        self.integrity_verifier = ModelIntegrityVerifier() if verify_model_integrity else None
 
     @staticmethod
     def _normalize_tta_views(tta_views: Optional[int], default: int) -> int:
@@ -119,21 +147,41 @@ class InferenceManager:
             # 自动模式
             return torch.device("cuda" if torch.cuda.is_available() else "cpu")
             
-    def load_model(self, model_path: Optional[str] = None, model_name: Optional[str] = None) -> None:
+    def load_model(self, model_path: Optional[str] = None, model_name: Optional[str] = None, skip_integrity_check: bool = False) -> None:
         """从检查点加载模型
         
         参数:
             model_path: 模型权重路径(如果为None则使用self.model_path)
             model_name: 模型名称(如果为None则使用self.model_name或config.model_name)
+            skip_integrity_check: 是否跳过完整性检查（不推荐）
         """
         model_path = model_path or self.model_path
         if model_path is None:
             raise ValueError("No model path provided")
+        
+        # SECURITY FIX: Validate model file exists and is a file
+        if not os.path.exists(model_path):
+            raise FileNotFoundError(f"Model file not found: {model_path}")
+        if not os.path.isfile(model_path):
+            raise ValueError(f"Model path is not a file: {model_path}")
+        
         inferred_model_name = _infer_model_name(model_path)
         model_name = model_name or self.model_name or inferred_model_name or self.config.model_name
             
         self.logger.info(f"Loading model from {model_path}")
         self.logger.info(f"Resolved model architecture: {model_name}")
+        
+        # SECURITY FIX: Verify model integrity before loading
+        if self.verify_model_integrity and not skip_integrity_check:
+            self.logger.info("Verifying model integrity...")
+            is_valid, error_msg = self.integrity_verifier.verify_model_integrity(model_path)
+            if not is_valid:
+                self.logger.error(f"Model integrity check FAILED: {error_msg}")
+                raise RuntimeError(f"Model integrity check failed: {error_msg}")
+            if error_msg:
+                self.logger.warning(f"Model integrity: {error_msg}")
+            else:
+                self.logger.info("Model integrity verified successfully")
         
         # 初始化模型架构
         model = get_net(
@@ -174,18 +222,43 @@ class InferenceManager:
         if self.model is None:
             raise RuntimeError("Model not loaded. Call load_model() first")
             
-        # 准备图像变换
+        # SECURITY FIX: Validate image path
+        if not os.path.exists(image_path):
+            raise FileNotFoundError(f"Image not found: {image_path}")
+        if not os.path.isfile(image_path):
+            raise ValueError(f"Image path is not a file: {image_path}")
+            
+        # SECURITY FIX: Quick security check for image file
+        if not validate_image_safe(image_path):
+            self.logger.warning(f"Image {image_path} failed basic security validation")
+            if self.strict_image_validation:
+                raise ImageSecurityError(f"Image failed security validation: {image_path}")
+        
+        # Prepare image transforms
         transform = build_transforms(train=False, test=True, cfg=self.config)
         
-        # 加载并变换图像
+        # Load and transform image - SECURITY FIX: Use secure image loading
         try:
-            image = Image.open(image_path).convert('RGB')
+            if self.strict_image_validation:
+                # Use secure loader for strict validation
+                image = self.secure_image_loader.load_image(
+                    image_path, 
+                    mode='RGB',
+                    target_size=(self.config.img_width, self.config.img_height)
+                )
+            else:
+                # Fallback to basic secure load
+                image = secure_load_image(image_path, mode='RGB')
+                
             image_tensor = transform(image).unsqueeze(0).to(self.device)
+        except ImageSecurityError as e:
+            self.logger.error(f"Image security error for {image_path}: {str(e)}")
+            raise
         except Exception as e:
             self.logger.error(f"Error loading image {image_path}: {str(e)}")
             raise
             
-        # 进行预测
+        # Make prediction
         with torch.no_grad():
             probabilities = self._predict_probabilities(image_tensor, tta_views=tta_views)
             
@@ -344,17 +417,26 @@ class InferenceManager:
         return pred_label
 
 class InferenceDataset(Dataset):
-    """推理数据集类"""
+    """推理数据集类 - 安全版本"""
     
-    def __init__(self, file_paths, cfg=None):
+    def __init__(self, file_paths, cfg=None, validate_images: bool = True):
         """初始化数据集
         
         参数:
             file_paths: 图像文件路径列表
+            validate_images: 是否验证图像安全性
         """
         self.config = cfg or config
         self.file_paths = file_paths
         self.transforms = build_transforms(train=False, test=True, cfg=self.config)
+        
+        # SECURITY FIX: Initialize secure image loader
+        self.validate_images = validate_images
+        self.secure_image_loader = SecureImageLoader(
+            max_pixels=getattr(self.config, 'safe_max_image_pixels', 100_000_000),
+            max_dimension=getattr(self.config, 'safe_max_image_dimension', 10000),
+            max_file_size=getattr(self.config, 'safe_max_file_size', 100 * 1024 * 1024)
+        )
         
     def __len__(self):
         """返回数据集大小"""
@@ -371,9 +453,18 @@ class InferenceDataset(Dataset):
         """
         img_path = self.file_paths[idx]
         try:
-            image = Image.open(img_path).convert('RGB')
+            # SECURITY FIX: Use secure image loading
+            if self.validate_images:
+                image = self.secure_image_loader.load_image(img_path, mode='RGB')
+            else:
+                image = secure_load_image(img_path, mode='RGB')
+                
             image = self.transforms(image)
             return image, img_path
+        except ImageSecurityError as e:
+            logging.error(f"Image security error {img_path}: {str(e)}")
+            # Return empty image as fallback
+            return torch.zeros((3, self.config.img_height, self.config.img_width)), img_path
         except Exception as e:
             logging.error(f"Error loading image {img_path}: {str(e)}")
             # Return empty image

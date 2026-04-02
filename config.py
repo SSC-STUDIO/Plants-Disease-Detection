@@ -306,5 +306,26 @@ class DefaultConfigs:
         elif not isinstance(self.aug_num_workers, int) or self.aug_num_workers <= 0:
             raise ValueError("aug_num_workers must be 'auto' or a positive integer")
 
+        # SECURITY FIX: Initialize security-related configurations
+        self._init_security_configs()
+    
+    def _init_security_configs(self):
+        """初始化安全配置"""
+        # Image Security Settings - 图像安全设置
+        # 防止解压炸弹攻击(decompression bomb)
+        self.safe_max_image_pixels = 100_000_000  # 100MP
+        self.safe_max_image_dimension = 10000     # 最大10000像素边长
+        self.safe_max_file_size = 100 * 1024 * 1024  # 最大100MB文件
+        self.safe_min_file_size = 100              # 最小100字节
+        
+        # Model Integrity Settings - 模型完整性设置
+        self.enable_model_integrity_check = True   # 启用模型哈希验证
+        self.model_hash_cache_path = self.paths.log_dir + "model_hashes.json"
+        
+        # Data Validation Settings - 数据验证设置
+        self.enable_path_traversal_protection = True  # 启用路径遍历保护
+        self.enable_label_validation = True           # 启用标签验证
+        self.strict_image_validation = True           # 启用严格图像验证
+
 config = DefaultConfigs()
 paths = config.paths

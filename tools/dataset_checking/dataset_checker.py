@@ -7,6 +7,13 @@ from PyQt6.QtGui import QPixmap, QImage
 from PyQt6.QtCore import Qt, QRect
 from PIL import Image
 
+# 添加项目路径以导入安全模块
+project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
+from utils.path_security import PathValidator, PathSecurityError
+
 class ImageViewer(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -124,9 +131,25 @@ class ImageViewer(QMainWindow):
     def select_directory(self):
         dir_path = QFileDialog.getExistingDirectory(self, "选择文件夹")
         if dir_path:
+            # SECURITY FIX: Validate directory path
+            validator = PathValidator()
+            if not validator.validate_path_traversal(dir_path):
+                QMessageBox.critical(self, "安全错误", "检测到路径遍历攻击模式")
+                return
+            if validator.is_sensitive_path(dir_path):
+                QMessageBox.critical(self, "安全错误", "无法访问敏感系统路径")
+                return
+            
             self.current_dir = dir_path
-            self.image_files = [f for f in os.listdir(dir_path) 
-                              if f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp'))]
+            
+            # SECURITY FIX: Validate each filename before processing
+            self.image_files = []
+            for f in os.listdir(dir_path):
+                if not validator.validate_path_traversal(f):
+                    print(f"警告: 跳过可疑文件名: {f}")
+                    continue
+                if f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp')):
+                    self.image_files.append(f)
             
             if not self.image_files:
                 QMessageBox.warning(self, "警告", "未找到图片")
@@ -166,8 +189,15 @@ class ImageViewer(QMainWindow):
         if not self.image_files:
             return
             
+        # SECURITY FIX: Validate image filename before use
+        filename = self.image_files[self.current_index]
+        validator = PathValidator()
+        if not validator.validate_path_traversal(filename):
+            QMessageBox.critical(self, "安全错误", "检测到可疑文件名")
+            return
+            
         # Create image display
-        image_path = os.path.join(self.current_dir, self.image_files[self.current_index])
+        image_path = os.path.join(self.current_dir, filename)
         pixmap = QPixmap(image_path)
         image_label = QLabel()
         image_label.setPixmap(pixmap.scaled(800, 600, Qt.AspectRatioMode.KeepAspectRatio))
