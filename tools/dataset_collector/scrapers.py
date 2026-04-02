@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 
 import os
+import sys
 import logging
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, 
                             QLineEdit, QFileDialog, QProgressBar, QMessageBox,
@@ -9,6 +10,13 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLa
                             QTextEdit, QTableWidget, QTableWidgetItem, QHeaderView)
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtWidgets import QApplication
+
+# 添加项目路径以导入安全模块
+project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
+from utils.path_security import PathValidator, PathSecurityError
 
 logger = logging.getLogger('Scraper')
 
@@ -184,6 +192,16 @@ class ScraperTab(QWidget):
         """浏览输出目录"""
         directory = QFileDialog.getExistingDirectory(self, "选择数据集输出目录")
         if directory:
+            # SECURITY FIX: Validate path for path traversal
+            validator = PathValidator()
+            if not validator.validate_path_traversal(directory):
+                QMessageBox.critical(self, "安全错误", "检测到路径遍历攻击模式，路径被拒绝")
+                logger.error(f"Path traversal detected in output directory: {directory}")
+                return
+            if validator.is_sensitive_path(directory):
+                QMessageBox.critical(self, "安全错误", "无法访问敏感系统路径")
+                logger.error(f"Sensitive path access attempted: {directory}")
+                return
             self.output_dir_edit.setText(directory)
     
     def toggle_size_filter(self, enabled):

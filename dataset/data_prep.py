@@ -2,6 +2,7 @@ import concurrent.futures
 import json
 import shutil
 import os
+import sys
 import zipfile
 import tarfile
 import glob
@@ -13,8 +14,15 @@ from PIL import Image
 from skimage.util import random_noise
 from skimage import exposure
 from typing import List, Optional, Tuple, Union, Dict, Any
+
+# 添加项目路径以导入安全模块
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
 from config import config, paths
 from utils.utils import get_image_glob_patterns
+from utils.path_security import PathValidator, PathSecurityError, safe_makedirs
 import random
 from concurrent.futures import ThreadPoolExecutor
 import traceback
@@ -338,32 +346,42 @@ class DataPreparation:
     def setup_directories(self) -> None:
         """创建项目所需的所有目录"""
         try:
+            # 获取项目基础目录用于验证
+            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            
             # 训练数据目录
             for i in range(0, 59):
-                os.makedirs(os.path.join(self.paths.train_dir, str(i)), exist_ok=True)
+                safe_makedirs(os.path.join(self.paths.train_dir, str(i)), 
+                            mode=0o755, allowed_base=base_dir)
             
-            # 临时目录
-            os.makedirs(self.paths.temp_images_dir, exist_ok=True)
-            os.makedirs(self.paths.temp_labels_dir, exist_ok=True)
+            # 临时目录 - SECURITY FIX: 使用 tempfile 模块并设置权限
+            import tempfile
+            if not hasattr(self.paths, 'temp_images_dir') or not self.paths.temp_images_dir:
+                self.paths.temp_images_dir = tempfile.mkdtemp(prefix='plants_temp_img_')
+                os.chmod(self.paths.temp_images_dir, 0o700)
+            else:
+                safe_makedirs(self.paths.temp_images_dir, mode=0o700, allowed_base=base_dir)
+            
+            safe_makedirs(self.paths.temp_labels_dir, mode=0o700, allowed_base=base_dir)
             
             # 测试图片目录
-            os.makedirs(self.paths.test_images_dir, exist_ok=True)
+            safe_makedirs(self.paths.test_images_dir, mode=0o755, allowed_base=base_dir)
             
             # 输出和日志目录
-            os.makedirs(self.paths.submit_dir, exist_ok=True)
-            os.makedirs(self.paths.log_dir, exist_ok=True)
+            safe_makedirs(self.paths.submit_dir, mode=0o755, allowed_base=base_dir)
+            safe_makedirs(self.paths.log_dir, mode=0o755, allowed_base=base_dir)
             
             # 模型保存目录 - 更清晰的命名
-            os.makedirs(self.paths.weight_dir, exist_ok=True)
-            os.makedirs(self.paths.best_weight_dir, exist_ok=True)
+            safe_makedirs(self.paths.weight_dir, mode=0o755, allowed_base=base_dir)
+            safe_makedirs(self.paths.best_weight_dir, mode=0o755, allowed_base=base_dir)
             
             # 数据增强目录
-            os.makedirs(self.paths.aug_train_dir, exist_ok=True)
+            safe_makedirs(self.paths.aug_train_dir, mode=0o755, allowed_base=base_dir)
             
             # 合并数据集目录
-            os.makedirs(self.paths.merged_train_dir, exist_ok=True)
-            os.makedirs(self.paths.merged_test_dir, exist_ok=True)
-            os.makedirs(self.paths.merged_val_dir, exist_ok=True)
+            safe_makedirs(self.paths.merged_train_dir, mode=0o755, allowed_base=base_dir)
+            safe_makedirs(self.paths.merged_test_dir, mode=0o755, allowed_base=base_dir)
+            safe_makedirs(self.paths.merged_val_dir, mode=0o755, allowed_base=base_dir)
             
             logger.info("All directories created successfully")
         except Exception as e:
@@ -371,7 +389,7 @@ class DataPreparation:
             raise
     
     def extract_zip_file(self, zip_path: str, extract_to: Optional[str] = None) -> bool:
-        """解压ZIP文件
+        """解压ZIP文件 - SECURITY FIX: 添加了 Zip Slip 防护
         
         参数:
             zip_path: ZIP文件路径
@@ -381,21 +399,60 @@ class DataPreparation:
             布尔值，表示是否成功
         """
         try:
+            # SECURITY FIX: Validate zip_path
+            validator = PathValidator()
+            if not validator.validate_path_traversal(zip_path):
+                logger.error(f"Path traversal detected in zip path: {zip_path}")
+                return False
+            
             if extract_to is None:
                 extract_to = os.path.dirname(zip_path)
             
+            # SECURITY FIX: Validate extract_to path
+            if not validator.validate_path_traversal(extract_to):
+                logger.error(f"Path traversal detected in extract path: {extract_to}")
+                return False
+            
+            # SECURITY FIX: Ensure extract_to is within project directory
+            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            if not validator.is_within_allowed_directory(extract_to, base_dir):
+                logger.error(f"Extract path outside project directory: {extract_to}")
+                return False
+            
             logger.info(f"Extracting {os.path.basename(zip_path)} to {extract_to}...")
             lower_path = zip_path.lower()
+            
             if lower_path.endswith(".zip"):
                 with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                    # SECURITY FIX: Zip Slip protection - validate each member path
+                    for member in zip_ref.namelist():
+                        member_path = os.path.join(extract_to, member)
+                        # 确保解压路径不会逃逸目标目录
+                        if not validator.is_within_allowed_directory(member_path, extract_to):
+                            logger.error(f"Zip Slip attack detected: {member}")
+                            return False
                     zip_ref.extractall(extract_to)
+                    
             elif lower_path.endswith((".tar", ".tar.gz", ".tgz", ".gz")):
                 with tarfile.open(zip_path, 'r:*') as tar_ref:
+                    # SECURITY FIX: Tar Slip protection
+                    for member in tar_ref.getmembers():
+                        member_path = os.path.join(extract_to, member.name)
+                        if not validator.is_within_allowed_directory(member_path, extract_to):
+                            logger.error(f"Tar Slip attack detected: {member.name}")
+                            return False
                     tar_ref.extractall(extract_to)
+                    
             elif lower_path.endswith(".rar"):
                 if rarfile is None:
                     raise RuntimeError("rarfile is not installed; cannot extract .rar archives")
                 with rarfile.RarFile(zip_path) as rar_ref:
+                    # SECURITY FIX: Rar Slip protection
+                    for member in rar_ref.namelist():
+                        member_path = os.path.join(extract_to, member)
+                        if not validator.is_within_allowed_directory(member_path, extract_to):
+                            logger.error(f"Rar Slip attack detected: {member}")
+                            return False
                     rar_ref.extractall(extract_to)
             else:
                 logger.error(f"Unsupported archive format: {zip_path}")

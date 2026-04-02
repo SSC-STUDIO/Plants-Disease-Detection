@@ -5,6 +5,7 @@ import shutil
 import logging
 import random
 import hashlib
+import sys
 from datetime import datetime
 from typing import Dict, List, Any, Optional
 import time
@@ -16,6 +17,13 @@ import ssl
 import urllib.request
 import ipaddress
 from urllib.parse import urlparse
+
+# 添加项目路径以导入安全模块
+project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
+from utils.path_security import PathValidator, PathSecurityError, safe_makedirs
 
 logger = logging.getLogger('DatasetMaker')
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}
@@ -133,17 +141,40 @@ class DatasetMaker:
             bool: 是否成功
         """
         try:
+            # SECURITY FIX: Validate source and output directories
+            validator = PathValidator()
+            
             # 验证源目录
+            if not validator.validate_path_traversal(source_dir):
+                logger.error(f"路径遍历攻击检测: {source_dir}")
+                return False
+            if validator.is_sensitive_path(source_dir):
+                logger.error(f"无法访问敏感路径: {source_dir}")
+                return False
             if not os.path.isdir(source_dir):
                 logger.error(f"源目录不存在: {source_dir}")
                 return False
             
-            # 创建输出目录
-            os.makedirs(output_dir, exist_ok=True)
+            # 验证输出目录
+            if not validator.validate_path_traversal(output_dir):
+                logger.error(f"路径遍历攻击检测: {output_dir}")
+                return False
+            if validator.is_sensitive_path(output_dir):
+                logger.error(f"无法访问敏感路径: {output_dir}")
+                return False
+            
+            # 安全创建输出目录
+            safe_makedirs(output_dir, mode=0o755)
             
             # 获取源目录中的所有子目录（类别）
-            class_dirs = [d for d in os.listdir(source_dir) 
-                         if os.path.isdir(os.path.join(source_dir, d)) and not d.startswith('.')]
+            class_dirs = []
+            for d in os.listdir(source_dir):
+                # SECURITY FIX: Validate each class directory name
+                if not validator.validate_path_traversal(d):
+                    logger.warning(f"跳过可疑的类别目录名: {d}")
+                    continue
+                if os.path.isdir(os.path.join(source_dir, d)) and not d.startswith('.'):
+                    class_dirs.append(d)
             
             if not class_dirs:
                 logger.error("源目录中未找到类别子目录")
@@ -166,9 +197,9 @@ class DatasetMaker:
             # 创建数据集子目录
             for split in ["train", "val", "test"]:
                 split_dir = os.path.join(output_dir, split)
-                os.makedirs(split_dir, exist_ok=True)
+                safe_makedirs(split_dir, mode=0o755, allowed_base=output_dir)
                 for class_dir in class_dirs:
-                    os.makedirs(os.path.join(split_dir, class_dir), exist_ok=True)
+                    safe_makedirs(os.path.join(split_dir, class_dir), mode=0o755, allowed_base=output_dir)
             
             # 处理每个类别
             label_mapping = {}

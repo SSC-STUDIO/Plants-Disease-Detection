@@ -2,12 +2,20 @@
 # -*- coding: utf-8 -*-
 
 import os
+import sys
 import logging
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, 
                             QLineEdit, QFileDialog, QProgressBar, QMessageBox,
                             QComboBox, QSpinBox, QCheckBox, QGroupBox, QFormLayout,
                             QTableWidget, QTableWidgetItem, QHeaderView, QScrollArea)
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
+
+# 添加项目路径以导入安全模块
+project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
+from utils.path_security import PathValidator, PathSecurityError
 
 logger = logging.getLogger('Importer')
 
@@ -179,12 +187,32 @@ class ImporterTab(QWidget):
         """浏览源目录"""
         directory = QFileDialog.getExistingDirectory(self, "选择源数据目录")
         if directory:
+            # SECURITY FIX: Validate path for path traversal
+            validator = PathValidator()
+            if not validator.validate_path_traversal(directory):
+                QMessageBox.critical(self, "安全错误", "检测到路径遍历攻击模式，路径被拒绝")
+                logger.error(f"Path traversal detected in source directory: {directory}")
+                return
+            if validator.is_sensitive_path(directory):
+                QMessageBox.critical(self, "安全错误", "无法访问敏感系统路径")
+                logger.error(f"Sensitive path access attempted: {directory}")
+                return
             self.source_dir_edit.setText(directory)
     
     def browse_output_directory(self):
         """浏览输出目录"""
         directory = QFileDialog.getExistingDirectory(self, "选择数据集输出目录")
         if directory:
+            # SECURITY FIX: Validate path for path traversal
+            validator = PathValidator()
+            if not validator.validate_path_traversal(directory):
+                QMessageBox.critical(self, "安全错误", "检测到路径遍历攻击模式，路径被拒绝")
+                logger.error(f"Path traversal detected in output directory: {directory}")
+                return
+            if validator.is_sensitive_path(directory):
+                QMessageBox.critical(self, "安全错误", "无法访问敏感系统路径")
+                logger.error(f"Sensitive path access attempted: {directory}")
+                return
             self.output_dir_edit.setText(directory)
     
     def scan_source_directory(self):
@@ -192,6 +220,17 @@ class ImporterTab(QWidget):
         source_dir = self.source_dir_edit.text()
         if not source_dir or not os.path.isdir(source_dir):
             QMessageBox.warning(self, "错误", "请选择有效的源目录")
+            return
+        
+        # SECURITY FIX: Validate source directory path
+        validator = PathValidator()
+        if not validator.validate_path_traversal(source_dir):
+            QMessageBox.critical(self, "安全错误", "检测到路径遍历攻击模式")
+            logger.error(f"Path traversal detected: {source_dir}")
+            return
+        if validator.is_sensitive_path(source_dir):
+            QMessageBox.critical(self, "安全错误", "无法访问敏感系统路径")
+            logger.error(f"Sensitive path access attempted: {source_dir}")
             return
             
         try:
@@ -208,6 +247,10 @@ class ImporterTab(QWidget):
             
             # 为每个子目录添加一行
             for i, subdir in enumerate(sorted(subdirs)):
+                # SECURITY FIX: Validate subdirectory name
+                if not validator.validate_path_traversal(subdir):
+                    logger.warning(f"Skipping suspicious subdirectory name: {subdir}")
+                    continue
                 self.mapping_table.insertRow(i)
                 self.mapping_table.setItem(i, 0, QTableWidgetItem(subdir))
                 self.mapping_table.setItem(i, 1, QTableWidgetItem(subdir.replace("_", " ").title()))

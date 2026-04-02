@@ -14,6 +14,21 @@ from concurrent.futures import ThreadPoolExecutor
 from utils.utils import handle_datasets, build_transforms, get_image_glob_patterns, get_image_extensions
 import concurrent.futures
 
+# SECURITY FIX: Import security modules
+from libs.image_security import (
+    SecureImageLoader,
+    ImageSecurityError,
+    ImageTooLargeError,
+    ImageValidationError,
+    secure_load_image
+)
+from libs.data_validation import (
+    DataSanitizer,
+    DataValidationResult,
+    SecureDatasetLoader,
+    validate_data_path
+)
+
 # 最大图像尺寸限制 (100MP, 约400MB内存)
 MAX_IMAGE_SIZE = 100_000_000
 
@@ -42,6 +57,9 @@ if not logger.handlers:
     logger.addHandler(file_handler)
     logger.addHandler(console_handler)
 
+# SECURITY FIX: Configure PIL to prevent decompression bomb attacks
+Image.MAX_IMAGE_PIXELS = MAX_IMAGE_SIZE
+
 def seed_everything(cfg) -> None:
     """设置随机种子，便于复现实验。"""
     random.seed(cfg.seed)
@@ -50,7 +68,7 @@ def seed_everything(cfg) -> None:
     torch.cuda.manual_seed_all(cfg.seed)
 
 class PlantDiseaseDataset(Dataset):
-    """植物病害图像数据集类"""
+    """植物病害图像数据集类 - 安全增强版本"""
     def __init__(
         self,
         label_list,
@@ -68,6 +86,7 @@ class PlantDiseaseDataset(Dataset):
         validation_workers=None,
         cfg=None,
         seed_all: bool = True,
+        strict_validation: bool = True,  # SECURITY FIX: Enable strict validation by default
     ):
         """初始化数据集
         
@@ -76,6 +95,7 @@ class PlantDiseaseDataset(Dataset):
             transforms: 数据增强转换
             train: 是否为训练模式
             test: 是否为测试模式
+            strict_validation: 是否启用严格的安全验证
         """
         self.config = cfg or config
         if seed_all:
@@ -93,10 +113,21 @@ class PlantDiseaseDataset(Dataset):
         self.transforms = self._get_transforms(transforms, train, test)
         self.validate_images = self.config.enable_image_validation if validate_images is None else validate_images
         self.validation_workers = validation_workers if validation_workers is not None else self.config.image_validation_workers
+        
+        # SECURITY FIX: Initialize security components
+        self.strict_validation = strict_validation
+        self.secure_image_loader = SecureImageLoader(
+            max_pixels=getattr(self.config, 'safe_max_image_pixels', MAX_IMAGE_SIZE),
+            max_dimension=getattr(self.config, 'safe_max_image_dimension', 10000),
+            max_file_size=getattr(self.config, 'safe_max_file_size', 100 * 1024 * 1024),
+            min_file_size=getattr(self.config, 'safe_min_file_size', 100)
+        )
+        self.data_sanitizer = DataSanitizer(base_path=self.config.paths.data_dir if hasattr(self.config, 'paths') else None)
+        
         self.imgs = self._load_images(label_list)
         
     def _load_images(self, label_list):
-        """加载并验证图像
+        """加载并验证图像 - 安全增强版本
         
         参数:
             label_list: 包含文件路径和标签的DataFrame
@@ -105,10 +136,33 @@ class PlantDiseaseDataset(Dataset):
             有效的图像数据列表
         """
         if self.test:
-            return [(row["filename"]) for _, row in label_list.iterrows()]
+            # SECURITY FIX: Validate test image paths
+            valid_files = []
+            for _, row in label_list.iterrows():
+                filename = row["filename"]
+                result = self.data_sanitizer.validate_file_path(filename, must_exist=True)
+                if result.is_valid:
+                    valid_files.append(result.sanitized_data)
+                else:
+                    logger.warning(f"Skipping invalid test file path: {filename}, errors: {result.errors}")
+            return valid_files
         
         # 将DataFrame转换为列表以提高处理速度
         imgs = list(zip(label_list["filename"], label_list["label"]))
+        
+        # SECURITY FIX: Validate and sanitize all file paths first
+        sanitized_imgs = []
+        for filename, label in imgs:
+            result = self.data_sanitizer.sanitize_dataset_record(
+                {"filename": filename, "label": label},
+                allowed_extensions={'.jpg', '.jpeg', '.png', '.bmp', '.gif', '.webp'}
+            )
+            if result.is_valid:
+                sanitized_imgs.append((result.sanitized_data["filename"], result.sanitized_data["label"]))
+            else:
+                logger.warning(f"Skipping invalid record: {filename}, errors: {result.errors}")
+        
+        imgs = sanitized_imgs
         
         # 对于大数据集，打印警告并建议采样
         if len(imgs) > 50000:
@@ -127,8 +181,8 @@ class PlantDiseaseDataset(Dataset):
         valid_imgs = []
         invalid_imgs = []
         
-        def validate_image_batch(batch):
-            """验证一批图像
+        def validate_image_batch_secure(batch):
+            """安全验证一批图像
             
             参数:
                 batch: 图像数据(文件名, 标签)元组的列表
@@ -142,28 +196,61 @@ class PlantDiseaseDataset(Dataset):
             for img_data in batch:
                 try:
                     filename = img_data[0]
-                    # 检查文件是否存在
+                    
+                    # SECURITY FIX: Use secure image loader for validation
+                    # First do quick file checks
                     if not os.path.exists(filename):
                         invalid.append(img_data)
                         continue
-                        
-                    # 检查文件大小，跳过过小文件
-                    file_size = os.path.getsize(filename)
-                    if file_size < 100:  # 小于100字节的文件几乎不可能是有效图像
+                    
+                    # SECURITY FIX: Validate file size
+                    try:
+                        file_size = os.path.getsize(filename)
+                        if file_size < self.secure_image_loader.min_file_size:
+                            logger.warning(f"File too small, possible corruption: {filename} ({file_size} bytes)")
+                            invalid.append(img_data)
+                            continue
+                        if file_size > self.secure_image_loader.max_file_size:
+                            logger.warning(f"File too large, possible attack: {filename} ({file_size} bytes)")
+                            invalid.append(img_data)
+                            continue
+                    except OSError:
                         invalid.append(img_data)
                         continue
-                        
-                    # 只验证文件头，不完整加载图像
-                    with Image.open(filename) as img:
-                        img.verify()
-                        valid.append(img_data)
-                except Exception:
+                    
+                    # SECURITY FIX: Validate image integrity without loading full image
+                    is_valid, error_msg = self.secure_image_loader.verify_image_integrity(filename)
+                    if not is_valid:
+                        logger.warning(f"Image integrity check failed for {filename}: {error_msg}")
+                        invalid.append(img_data)
+                        continue
+                    
+                    # Additional check: try to get image size without loading pixels
+                    try:
+                        with Image.open(filename) as img:
+                            width, height = img.size
+                            if width * height > self.secure_image_loader.max_pixels:
+                                logger.warning(f"Image too large (decompression bomb?): {filename} ({width}x{height})")
+                                invalid.append(img_data)
+                                continue
+                            if width > self.secure_image_loader.max_dimension or height > self.secure_image_loader.max_dimension:
+                                logger.warning(f"Image dimensions too large: {filename} ({width}x{height})")
+                                invalid.append(img_data)
+                                continue
+                    except Exception as e:
+                        logger.warning(f"Cannot read image metadata: {filename}: {e}")
+                        invalid.append(img_data)
+                        continue
+                    
+                    valid.append(img_data)
+                except Exception as e:
+                    logger.warning(f"Unexpected error validating {img_data[0]}: {e}")
                     invalid.append(img_data)
             
             return valid, invalid
         
         # 使用多线程并行验证图像
-        print("Validating images...")
+        print("Validating images with security checks...")
         
         # 更高效的批处理配置
         batch_size = 100  # 更大的批次以减少线程创建开销
@@ -180,7 +267,7 @@ class PlantDiseaseDataset(Dataset):
             # 使用tqdm显示进度
             futures = []
             for batch in batches:
-                futures.append(executor.submit(validate_image_batch, batch))
+                futures.append(executor.submit(validate_image_batch_secure, batch))
             
             for future in tqdm(concurrent.futures.as_completed(futures), 
                              total=len(futures), 
@@ -201,7 +288,7 @@ class PlantDiseaseDataset(Dataset):
             print(f"The size of the sampled dataset: {len(valid_imgs)} images")
         
         if invalid_imgs:
-            print(f"\nFound {len(invalid_imgs)} unreadable images that will be skipped:")
+            print(f"\nFound {len(invalid_imgs)} invalid images that will be skipped:")
             for _, (filename, _) in enumerate(invalid_imgs[:5], 1):
                 print(f"  {filename}")
             if len(invalid_imgs) > 5:
@@ -239,7 +326,7 @@ class PlantDiseaseDataset(Dataset):
         )
 
     def __getitem__(self, index):
-        """获取单个数据样本
+        """获取单个数据样本 - 安全增强版本
         
         参数:
             index: 索引
@@ -250,27 +337,34 @@ class PlantDiseaseDataset(Dataset):
         try:
             if self.test:
                 filename = self.imgs[index]
-                img = Image.open(filename).convert('RGB')
-                # 检查图像尺寸
-                width, height = img.size
-                if width * height > MAX_IMAGE_SIZE:
-                    raise ValueError(f"Image too large: {width}x{height} ({width*height} pixels)")
+                # SECURITY FIX: Use secure image loading
+                img = self.secure_image_loader.load_image(filename, mode='RGB')
                 img_tensor = self.transforms(img)
                 return img_tensor, filename
             else:
                 filename, label = self.imgs[index]
-                img = Image.open(filename).convert('RGB')
-                # 检查图像尺寸
-                width, height = img.size
-                if width * height > MAX_IMAGE_SIZE:
-                    raise ValueError(f"Image too large: {width}x{height} ({width*height} pixels)")
+                # SECURITY FIX: Use secure image loading
+                img = self.secure_image_loader.load_image(filename, mode='RGB')
                 img_tensor = self.transforms(img)
                 return img_tensor, label
-        except Exception as e:
-            print(f"Error loading image at index {index}: {str(e)}")
+        except ImageSecurityError as e:
+            logger.warning(f"Image security error at index {index}: {str(e)}")
             # 返回空张量作为错误处理
-            return (torch.zeros((3, self.img_height, self.img_width)), 
-                   self.imgs[index][1] if not self.test else self.imgs[index])
+            if self.test:
+                return (torch.zeros((3, self.img_height, self.img_width)), 
+                       self.imgs[index] if index < len(self.imgs) else "")
+            else:
+                return (torch.zeros((3, self.img_height, self.img_width)), 
+                       self.imgs[index][1] if index < len(self.imgs) else 0)
+        except Exception as e:
+            logger.error(f"Error loading image at index {index}: {str(e)}")
+            # 返回空张量作为错误处理
+            if self.test:
+                return (torch.zeros((3, self.img_height, self.img_width)), 
+                       self.imgs[index] if index < len(self.imgs) else "")
+            else:
+                return (torch.zeros((3, self.img_height, self.img_width)), 
+                       self.imgs[index][1] if index < len(self.imgs) else 0)
                 
     def __len__(self):
         """返回数据集大小"""
@@ -278,18 +372,9 @@ class PlantDiseaseDataset(Dataset):
 
 def collate_fn(batch):
     """批次数据收集函数
-    
-    参数:
-        batch: 批次数据
-        
-    返回:
-        (图像张量堆叠, 标签列表)
-    """
-    imgs, labels = zip(*batch)
-    return torch.stack(imgs, 0), list(labels)
 
 def get_files(data_path, mode, cfg=None):
-    """获取数据集文件路径和标签
+    """获取数据集文件路径和标签 - 安全增强版本
     
     参数:
         data_path: 数据集根目录路径
@@ -307,36 +392,76 @@ def get_files(data_path, mode, cfg=None):
     logger.info(f"Loading {mode} dataset from: {actual_root}")
     
     cfg = cfg or config
+    
+    # SECURITY FIX: Initialize data sanitizer for path validation
+    data_sanitizer = DataSanitizer(base_path=cfg.paths.data_dir if hasattr(cfg, 'paths') else None)
 
     if mode == "test":
         image_exts = get_image_extensions(cfg=cfg)
-        files = [
-            os.path.join(actual_root, img)
-            for img in os.listdir(actual_root)
-            if img.lower().endswith(image_exts)
-        ]
+        files = []
+        for img in os.listdir(actual_root):
+            img_path = os.path.join(actual_root, img)
+            # SECURITY FIX: Validate file path
+            result = data_sanitizer.validate_file_path(
+                img_path, 
+                must_exist=True,
+                allowed_extensions=set(ext.lower() for ext in image_exts)
+            )
+            if result.is_valid:
+                files.append(result.sanitized_data)
+            else:
+                logger.warning(f"Skipping invalid test file: {img_path}")
         files.sort()
         return pd.DataFrame({"filename": files})
         
     elif mode in ["train", "val"]: 
         all_data_path, labels = [], []
-        image_folders = [os.path.join(actual_root, x) for x in os.listdir(actual_root) 
-                        if os.path.isdir(os.path.join(actual_root, x))]
+        
+        # SECURITY FIX: Validate directory listing
+        try:
+            dir_contents = os.listdir(actual_root)
+        except OSError as e:
+            raise PermissionError(f"Cannot access directory {actual_root}: {e}")
+        
+        image_folders = []
+        for x in dir_contents:
+            folder_path = os.path.join(actual_root, x)
+            # SECURITY FIX: Validate folder path
+            result = data_sanitizer.validate_file_path(folder_path, must_exist=True)
+            if result.is_valid and os.path.isdir(folder_path):
+                image_folders.append(result.sanitized_data)
         
         # 获取所有jpg和png图像路径
         image_patterns = [f"/{pattern}" for pattern in get_image_glob_patterns(cfg=cfg)]
         all_images = []
         for folder in image_folders:
             for pattern in image_patterns:
-                all_images.extend(glob(folder + pattern))
+                # SECURITY FIX: Sanitize glob results
+                matched_files = glob(folder + pattern)
+                for file_path in matched_files:
+                    result = data_sanitizer.validate_file_path(file_path, must_exist=True)
+                    if result.is_valid:
+                        all_images.append(result.sanitized_data)
+                    else:
+                        logger.warning(f"Skipping invalid image path: {file_path}")
         all_images.sort()
                 
         logger.info(f"Loading {mode} dataset ({len(all_images)} images)")
+        
         for file in tqdm(all_images):
-            all_data_path.append(file)
-            # 从路径中提取标签
-            label = int(os.path.basename(os.path.dirname(file)))
-            labels.append(label)
+            # SECURITY FIX: Validate label extraction
+            try:
+                label_str = os.path.basename(os.path.dirname(file))
+                # Validate label is a valid integer
+                label = int(label_str)
+                if label < 0:
+                    logger.warning(f"Negative label found for {file}: {label}")
+                    continue
+                all_data_path.append(file)
+                labels.append(label)
+            except ValueError as e:
+                logger.warning(f"Invalid label for {file}: {e}")
+                continue
             
         return pd.DataFrame({
             "filename": all_data_path,
@@ -344,4 +469,4 @@ def get_files(data_path, mode, cfg=None):
         })
         
     else:
-        raise ValueError("Mode must be one of 'train', 'val', or 'test'") 
+        raise ValueError("Mode must be one of 'train', 'val', or 'test'")
