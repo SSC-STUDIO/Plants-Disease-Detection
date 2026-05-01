@@ -19,8 +19,15 @@ def _build_torchvision_model(builder, weights_attr, pretrained):
 
 
 def _freeze_all_parameters(model):
+    """冻结模型所有参数"""
     for param in model.parameters():
         param.requires_grad = False
+
+
+def _unfreeze_all_parameters(model):
+    """解冻模型所有参数（用于从头训练或无预训练权重时）"""
+    for param in model.parameters():
+        param.requires_grad = True
 
 
 def _unfreeze_matching_parameters(model, trainable_keywords):
@@ -30,24 +37,42 @@ def _unfreeze_matching_parameters(model, trainable_keywords):
 
 
 def _create_timm_model_with_retry(model_names, pretrained, **kwargs):
-    last_error = None
-    for model_name in model_names:
-        try:
-            model = timm.create_model(model_name, pretrained=pretrained, **kwargs)
-            print(f"Created model: {model_name}")
-            return model
-        except Exception as exc:
-            last_error = exc
+    """创建 timm 模型，支持重试和预训练权重回退。
 
+    Args:
+        model_names: 模型名称候选列表
+        pretrained: 是否使用预训练权重
+        **kwargs: 传递给 timm.create_model 的其他参数
+
+    Returns:
+        元组 (model, pretrained_loaded):
+            - model: 创建的模型
+            - pretrained_loaded: 是否成功加载了预训练权重
+    """
+    last_error = None
+
+    # 如果请求预训练权重，先尝试加载
     if pretrained:
-        print("Falling back to randomly initialized weights after pretrained download/init failure")
         for model_name in model_names:
             try:
-                model = timm.create_model(model_name, pretrained=False, **kwargs)
-                print(f"Created model without pretrained weights: {model_name}")
-                return model
+                model = timm.create_model(model_name, pretrained=True, **kwargs)
+                print(f"Created model with pretrained weights: {model_name}")
+                return model, True  # 成功加载预训练权重
             except Exception as exc:
                 last_error = exc
+                print(f"Failed to load pretrained weights for {model_name}: {exc}")
+
+        # 预训练权重下载失败，回退到随机初始化
+        print("Falling back to randomly initialized weights after pretrained download failure")
+
+    # 尝试随机初始化
+    for model_name in model_names:
+        try:
+            model = timm.create_model(model_name, pretrained=False, **kwargs)
+            print(f"Created model without pretrained weights: {model_name}")
+            return model, False  # 使用随机初始化
+        except Exception as exc:
+            last_error = exc
 
     raise RuntimeError(f"Failed to create timm model from candidates {model_names}: {last_error}") from last_error
 
@@ -116,16 +141,21 @@ def get_efficientnet(num_classes, pretrained=True):
 
 def get_efficientnetv2(num_classes, pretrained=True):
     """获取EfficientNetV2-S模型，性能更好
+
     Args:
-        pretrained (bool): 是否使用预训练权重，默认为True
+        num_classes: 分类类别数
+        pretrained: 是否使用预训练权重，默认为True
+
+    Returns:
+        EfficientNetV2-S 模型
     """
     # SSL验证保持默认启用状态以确保安全
     # 如需使用特定证书，可通过环境变量 SSL_CERT_FILE 配置
-    
+
     # 设置环境变量
     os.environ['TORCH_HOME'] = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'checkpoints', 'pretrained')
     os.environ['HF_HOME'] = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'checkpoints', 'pretrained')
-    
+
     if timm is None:
         print("timm is not installed, falling back to torchvision efficientnet_v2_s")
         model = _build_torchvision_model(
@@ -140,21 +170,41 @@ def get_efficientnetv2(num_classes, pretrained=True):
         )
         return model
 
-    try:
-        model = timm.create_model(
-            'tf_efficientnetv2_s',
-            pretrained=pretrained,
-            num_classes=0,
-            features_only=False,
-            out_indices=None,
-        )
-        print("Created EfficientNetV2-S model")
-    except Exception as e:
-        raise RuntimeError(f"Failed to create EfficientNetV2-S model: {str(e)}") from e
-    
+    pretrained_loaded = False
+    model = None
+
+    # 尝试加载预训练权重
+    if pretrained:
+        try:
+            model = timm.create_model(
+                'tf_efficientnetv2_s',
+                pretrained=True,
+                num_classes=0,
+                features_only=False,
+                out_indices=None,
+            )
+            pretrained_loaded = True
+            print("Created EfficientNetV2-S model with pretrained weights")
+        except Exception as e:
+            print(f"Failed to load pretrained EfficientNetV2-S: {e}, falling back to random init")
+
+    # 如果没有成功加载预训练权重，使用随机初始化
+    if model is None:
+        try:
+            model = timm.create_model(
+                'tf_efficientnetv2_s',
+                pretrained=False,
+                num_classes=0,
+                features_only=False,
+                out_indices=None,
+            )
+            print("Created EfficientNetV2-S model without pretrained weights")
+        except Exception as e:
+            raise RuntimeError(f"Failed to create EfficientNetV2-S model: {str(e)}") from e
+
     # 获取特征维度
     feature_dim = model.num_features
-    
+
     # 修改分类头
     model.classifier = nn.Sequential(
         nn.Flatten(),
@@ -164,22 +214,30 @@ def get_efficientnetv2(num_classes, pretrained=True):
         nn.Dropout(0.3),
         nn.Linear(1024, num_classes)
     )
-    
-    # 使用渐进式解冻
-    for param in model.parameters():
-        param.requires_grad = False
-    
-    # 只训练最后几层
-    trainable_layers = [
-        model.classifier,
-        model.blocks[-1],
-        model.blocks[-2]
-    ]
-    
-    for layer in trainable_layers:
-        for param in layer.parameters():
-            param.requires_grad = True
-    
+
+    # 只有成功加载预训练权重时才使用渐进式解冻
+    if pretrained_loaded:
+        # 使用渐进式解冻
+        for param in model.parameters():
+            param.requires_grad = False
+
+        # 只训练最后几层
+        trainable_layers = [
+            model.classifier,
+            model.blocks[-1],
+            model.blocks[-2]
+        ]
+
+        for layer in trainable_layers:
+            for param in layer.parameters():
+                param.requires_grad = True
+
+        print("EfficientNetV2-S: partial freeze for fine-tuning")
+    else:
+        # 随机初始化，训练所有层
+        _unfreeze_all_parameters(model)
+        print("EfficientNetV2-S: full training mode (no pretrained weights)")
+
     return model
 
 def get_convnext(num_classes, pretrained=True):
@@ -205,13 +263,61 @@ def get_convnext(num_classes, pretrained=True):
     return model
 
 
+def get_eva02_large(num_classes, pretrained=True):
+    """获取EVA-02 Base模型 - 2024年最先进的视觉Transformer（针对8GB显存优化）
+
+    Args:
+        num_classes: 分类类别数
+        pretrained: 是否使用预训练权重，默认为True
+
+    Returns:
+        EVA-02 Base模型
+    """
+    if timm is None:
+        raise ImportError("timm is required for EVA-02 model. Install with: pip install timm>=0.9.0")
+
+    # EVA-02模型名称候选列表（Base版本更适合8GB显存）
+    model_names = [
+        "eva02_base_patch14_224.mim_in22k",  # Base 224px版本 - 正确的预训练标签
+        "eva02_small_patch14_224",  # Small版本作为备选（无预训练标签）
+    ]
+
+    # 尝试创建模型，支持重试机制
+    model, pretrained_loaded = _create_timm_model_with_retry(
+        model_names,
+        pretrained=pretrained,
+        num_classes=num_classes,
+        drop_path_rate=0.05,  # 较低的drop path率
+    )
+
+    # 只有成功加载预训练权重时才使用渐进式解冻策略
+    # 如果是随机初始化，则训练所有层
+    if pretrained_loaded:
+        _freeze_all_parameters(model)
+        _unfreeze_matching_parameters(model, ("blocks.11", "blocks.10", "norm", "head"))
+        print("EVA-02 Base model created with pretrained weights (partial freeze for fine-tuning)")
+    else:
+        _unfreeze_all_parameters(model)
+        print("EVA-02 Base model created without pretrained weights (full training mode)")
+
+    return model
+
+
 def get_convnextv2_base_384(num_classes, pretrained=True):
-    """获取更现代的 ConvNeXt V2 Base 384 模型。"""
+    """获取更现代的 ConvNeXt V2 Base 384 模型。
+
+    Args:
+        num_classes: 分类类别数
+        pretrained: 是否使用预训练权重，默认为True
+
+    Returns:
+        ConvNeXt V2 Base 384 模型
+    """
     if timm is None:
         print("timm is not installed, falling back to torchvision convnext_small")
         return get_convnext(num_classes, pretrained=pretrained)
 
-    model = _create_timm_model_with_retry(
+    model, pretrained_loaded = _create_timm_model_with_retry(
         [
             "convnextv2_base.fcmae_ft_in22k_in1k_384",
             "convnextv2_base.fcmae_ft_in22k_in1k",
@@ -221,8 +327,14 @@ def get_convnextv2_base_384(num_classes, pretrained=True):
         drop_path_rate=0.2,
     )
 
-    _freeze_all_parameters(model)
-    _unfreeze_matching_parameters(model, ("stages.3", "norm", "head"))
+    # 只有成功加载预训练权重时才使用渐进式解冻策略
+    if pretrained_loaded:
+        _freeze_all_parameters(model)
+        _unfreeze_matching_parameters(model, ("stages.3", "norm", "head"))
+        print("ConvNeXt V2 Base 384 model created with pretrained weights (partial freeze for fine-tuning)")
+    else:
+        _unfreeze_all_parameters(model)
+        print("ConvNeXt V2 Base 384 model created without pretrained weights (full training mode)")
 
     return model
 
@@ -357,6 +469,7 @@ MODEL_REGISTRY = {
     "efficientnetv2_s": get_efficientnetv2,
     "convnext_small": get_convnext,
     "convnextv2_base_384": get_convnextv2_base_384,
+    "eva02_large": get_eva02_large,  # 2024年最新架构
     "swin_transformer": get_swin_transformer,
     "hybrid_model": get_hybrid_model,
     "ensemble_model": get_ensemble_model,
@@ -374,11 +487,13 @@ def get_net(model_name, num_classes, pretrained=True):
     可以在此选择哪个模型用于训练
 
     Args:
-        pretrained (bool): 是否使用预训练权重，默认为True
+        model_name: 模型名称
+        num_classes: 分类类别数
+        pretrained: 是否使用预训练权重，默认为True
     """
     if model_name in MODEL_REGISTRY:
         print(f"Using model: {model_name}")
         return MODEL_REGISTRY[model_name](num_classes, pretrained=pretrained)
     else:
-        print(f"Model {model_name} not found, using default ConvNeXt V2 Base 384")
-        return get_convnextv2_base_384(num_classes, pretrained=pretrained)
+        print(f"Model {model_name} not found, using default EVA-02 Large")
+        return get_eva02_large(num_classes, pretrained=pretrained)

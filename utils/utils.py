@@ -107,22 +107,51 @@ class CustomModelEmaV2:
         self.device = device
         return self
 
-# Alias ModelEmaV2 to either timm's version or our custom version
-try:
-    if TimmModelEmaV2 is None:
-        raise ImportError("timm is not installed")
+# Lazy initialization flag and ModelEmaV2 alias
+_ModelEmaV2_cached = None
+_ModelEmaV2_implementation_logged = False
 
-    test_model = torch.nn.Sequential(torch.nn.Linear(10, 10))
-    test_ema = TimmModelEmaV2(test_model, decay=0.999)
-    for p_ema, p_model in zip(test_ema.module.parameters(), test_model.parameters()):
-        p_ema.data.copy_(p_model.data)
+def _get_ModelEmaV2_class():
+    """Get the appropriate ModelEmaV2 implementation (lazy initialization).
 
-    ModelEmaV2 = TimmModelEmaV2
-    logger.info("Using timm's ModelEmaV2 implementation")
-except Exception:
-    # Fall back to our custom implementation
-    ModelEmaV2 = CustomModelEmaV2
-    logger.info("Using custom ModelEmaV2 implementation")
+    This defers the test/selection logic until first use, avoiding
+    repeated execution during multiprocessing worker initialization.
+    """
+    global _ModelEmaV2_cached, _ModelEmaV2_implementation_logged
+
+    if _ModelEmaV2_cached is not None:
+        return _ModelEmaV2_cached
+
+    # Alias ModelEmaV2 to either timm's version or our custom version
+    try:
+        if TimmModelEmaV2 is None:
+            raise ImportError("timm is not installed")
+
+        test_model = torch.nn.Sequential(torch.nn.Linear(10, 10))
+        test_ema = TimmModelEmaV2(test_model, decay=0.999)
+        for p_ema, p_model in zip(test_ema.module.parameters(), test_model.parameters()):
+            p_ema.data.copy_(p_model.data)
+
+        _ModelEmaV2_cached = TimmModelEmaV2
+        if not _ModelEmaV2_implementation_logged:
+            logger.info("Using timm's ModelEmaV2 implementation")
+            _ModelEmaV2_implementation_logged = True
+    except Exception:
+        # Fall back to our custom implementation
+        _ModelEmaV2_cached = CustomModelEmaV2
+        if not _ModelEmaV2_implementation_logged:
+            logger.info("Using custom ModelEmaV2 implementation")
+            _ModelEmaV2_implementation_logged = True
+
+    return _ModelEmaV2_cached
+
+# Create a proxy class that delegates to the actual implementation
+class ModelEmaV2:
+    """Proxy class that delegates to the appropriate EMA implementation."""
+
+    def __new__(cls, *args, **kwargs):
+        actual_class = _get_ModelEmaV2_class()
+        return actual_class(*args, **kwargs)
 
 def save_latest_model(
     state: Dict[str, Any],

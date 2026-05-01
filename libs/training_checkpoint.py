@@ -6,6 +6,7 @@ Extracted from training.py to reduce function complexity
 import os
 import torch
 from typing import Dict, Any, Tuple, Optional
+from models.model import get_net
 
 
 def load_training_state(checkpoint_path: str, best_model_path: str, 

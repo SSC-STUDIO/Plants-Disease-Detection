@@ -371,7 +371,66 @@ class PlantDiseaseDataset(Dataset):
         return len(self.imgs)
 
 def collate_fn(batch):
-    """批次数据收集函数
+    """批次数据收集函数 - 正确堆叠张量成批次
+
+    Args:
+        batch: 数据样本列表，每个样本是 (image_tensor, label) 或 (image_tensor, filename) 元组
+
+    Returns:
+        堆叠后的 (inputs, targets) 元组
+    """
+    # 过滤掉 None 值
+    batch = [item for item in batch if item is not None]
+
+    if not batch:
+        return torch.tensor([]), torch.tensor([])
+
+    # 分离输入和目标
+    inputs = []
+    targets = []
+
+    for item in batch:
+        if isinstance(item, (list, tuple)) and len(item) == 2:
+            inputs.append(item[0])
+            targets.append(item[1])
+        else:
+            # 单个张量的情况
+            inputs.append(item)
+
+    # 堆叠输入张量
+    if inputs:
+        # 确保所有输入都是张量
+        tensor_inputs = []
+        for inp in inputs:
+            if isinstance(inp, torch.Tensor):
+                tensor_inputs.append(inp)
+            else:
+                # 如果不是张量，尝试转换
+                tensor_inputs.append(torch.tensor(inp))
+
+        if tensor_inputs:
+            inputs = torch.stack(tensor_inputs, dim=0)
+        else:
+            inputs = torch.tensor([])
+    else:
+        inputs = torch.tensor([])
+
+    # 处理目标
+    if targets:
+        # 检查目标类型
+        if isinstance(targets[0], (int, float)):
+            targets = torch.tensor(targets, dtype=torch.long)
+        elif isinstance(targets[0], torch.Tensor):
+            targets = torch.stack(targets, dim=0)
+        elif isinstance(targets[0], str):
+            # 测试模式下目标是文件名，保持为列表
+            pass
+        else:
+            targets = torch.tensor(targets)
+    else:
+        targets = torch.tensor([])
+
+    return inputs, targets
 
 def get_files(data_path, mode, cfg=None):
     """获取数据集文件路径和标签 - 安全增强版本

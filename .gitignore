@@ -108,3 +108,23 @@ temp/
 # Local MCP config
 .mcp.json
 
+
+# 训练日志
+*.log
+training_output.txt
+training_error.txt
+
+# 远程训练临时文件
+training_remote.log
+
+# 文档归档
+docs/archive/
+
+# uv.lock 可能很大
+uv.lock
+
+# 工具测试数据
+tools/dataset_collector/test/test/
+tools/dataset_collector/test/train/
+tools/dataset_collector/test/val/
+

@@ -150,6 +150,49 @@ class Trainer:
             if directory in [self.config.best_weights, self.config.weights]:
                 os.makedirs(os.path.join(directory, self.config.model_name, "0"), exist_ok=True)
 
+    def _sync_num_classes_from_datasets(self, train_loader, val_loader=None):
+        """从实际加载的数据集同步类别数。
+
+        检查数据集中的标签，确保 config.num_classes 与实际类别数一致。
+
+        Args:
+            train_loader: 训练数据加载器
+            val_loader: 验证数据加载器（可选）
+
+        Returns:
+            实际检测到的类别数
+        """
+        # 收集所有标签
+        all_labels = set()
+
+        # 从训练集获取标签
+        if hasattr(train_loader, 'dataset') and hasattr(train_loader.dataset, 'imgs'):
+            for item in train_loader.dataset.imgs:
+                if isinstance(item, (list, tuple)) and len(item) >= 2:
+                    label = item[1]
+                    if isinstance(label, int):
+                        all_labels.add(label)
+
+        # 从验证集获取标签
+        if val_loader and hasattr(val_loader, 'dataset') and hasattr(val_loader.dataset, 'imgs'):
+            for item in val_loader.dataset.imgs:
+                if isinstance(item, (list, tuple)) and len(item) >= 2:
+                    label = item[1]
+                    if isinstance(label, int):
+                        all_labels.add(label)
+
+        if all_labels:
+            detected_classes = max(all_labels) + 1
+            if detected_classes != self.config.num_classes:
+                self.logger.info(f"Syncing num_classes from {self.config.num_classes} to {detected_classes} (detected from loaded dataset)")
+                self.config.num_classes = detected_classes
+            else:
+                self.logger.info(f"num_classes verified: {self.config.num_classes} classes detected")
+        else:
+            self.logger.warning(f"Could not detect classes from dataset, using config value: {self.config.num_classes}")
+
+        return self.config.num_classes
+
     def train_epoch(self, model, train_dataloader, 
                    criterion, optimizer, epoch, 
                    log=None, scaler=None, 
@@ -227,8 +270,7 @@ class Trainer:
                     except Exception as e:
                         log.write(f"Error updating EMA in iteration {iter}: {str(e)}\n")
                 
-                # Calculate metrics
-                from utils.utils import accuracy
+                # Calculate metrics (accuracy already imported via 'from utils.utils import *')
                 acc_target = target_a if use_mixup else target
                 precision1_train, precision2_train = accuracy(output, acc_target, topk=(1, 2))
                     
@@ -577,7 +619,10 @@ class Trainer:
         
         if start_epoch >= epochs and not force_train:
             return {"completed": True, "epochs_trained": start_epoch, "best_acc": best_acc}
-        
+
+        # 在建模前同步类别数
+        self._sync_num_classes_from_datasets(train_loader, val_loader)
+
         # 设置模型
         model = setup_model(self.config, self.device, start_epoch, self.logger)
         

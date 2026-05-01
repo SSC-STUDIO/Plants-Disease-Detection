@@ -114,7 +114,7 @@ class DefaultConfigs:
     train_data: str = field(default="")  # 训练数据路径
     test_data: str = field(default="")  # 测试数据路径
     val_data: str = "none"  # 验证数据路径
-    model_name: str = "convnextv2_base_384"  # 使用更现代的 ConvNeXt V2 Base 384 模型
+    model_name: str = "convnextv2_base_384"  # 使用 ConvNeXt V2 Base 384 模型 (现代架构，适合8GB显存)
     weights: str = field(default="")  # 权重保存路径
     best_weights: str = field(default="")  # 最佳模型保存路径
     submit: str = field(default="")  # 提交结果保存路径
@@ -129,10 +129,10 @@ class DefaultConfigs:
     image_extensions: Tuple[str, ...] = ('.jpg', '.jpeg', '.png', '.bmp', '.webp')  # 允许的图像扩展名
     
     # 数据集合并配置 Dataset Merging Configuration
-    merge_datasets: bool = False  # 是否合并多个数据集，当设置时会影响所有三个数据集的合并设置
-    merge_train_datasets: bool = False  # 是否合并训练数据集
-    merge_val_datasets: bool = False  # 是否合并验证数据集
-    merge_test_datasets: bool = False  # 是否合并测试数据集，默认开启
+    merge_datasets: bool = True  # 是否合并多个数据集，当设置时会影响所有三个数据集的合并设置
+    merge_train_datasets: bool = True  # 是否合并训练数据集
+    merge_val_datasets: bool = True  # 是否合并验证数据集
+    merge_test_datasets: bool = True  # 是否合并测试数据集，默认开启
     dataset_to_use: str = "auto"  # 不合并时选择使用哪个数据集: "auto"(最大的), "first", "last", "specific"
     specific_dataset: str = ""  # 指定使用的数据集名称，当dataset_to_use="specific"时有效
     duplicate_test_to_common: bool = False  # 是否将测试集复制到通用测试目录
@@ -158,19 +158,19 @@ class DefaultConfigs:
     cuda_alloc_conf: Optional[str] = "expandable_segments:True"  # PYTORCH_CUDA_ALLOC_CONF 配置
 
     # 训练参数 Training Parameters
-    epoch: int = 40  # 训练轮数
-    pretrained: bool = True  # 默认启用预训练权重以提升迁移学习效果
-    train_batch_size: int = 8  # ConvNeXt V2 Base 384 默认使用更保守的批次大小
-    val_batch_size: int = 8  # 验证批次大小
-    test_batch_size: int = 8  # 测试批次大小
-    num_workers: Union[int, str] = 'auto'  # 数据加载线程数（可以是整数或 'auto'）
-    img_height: int = 384  # 图像高度
-    img_width: int = 384  # 图像宽度
-    num_classes: int = 59  # 类别数量
+    epoch: int = 50  # EVA-02推荐更多训练轮次以充分收敛
+    pretrained: bool = True  # 启用预训练权重
+    train_batch_size: int = 8  # ConvNeXt V2 Base 384，较小批次以适应显存
+    val_batch_size: int = 32  # 验证批次大小
+    test_batch_size: int = 32  # 测试批次大小
+    num_workers: int = 4  # 8GB显存优化，减少worker数量
+    img_height: int = 384  # ConvNeXt V2 Base 标准输入尺寸
+    img_width: int = 384  # ConvNeXt V2 Base 标准输入尺寸
+    num_classes: int = 186  # 类别数量
     seed: int = 888  # 随机种子
-    lr: float = 3e-4  # 学习率
+    lr: float = 1e-4  # ConvNeXt V2 Base 推荐学习率
     lr_decay: float = 1e-4  # 学习率衰减
-    weight_decay: float = 5e-2  # 权重衰减
+    weight_decay: float = 0.05  # 权重衰减
     
     # 优化器配置 Optimizer Configuration
     optimizer: str = 'adamw'  # 优化器选择
@@ -308,7 +308,10 @@ class DefaultConfigs:
 
         # SECURITY FIX: Initialize security-related configurations
         self._init_security_configs()
-    
+
+        # 自动同步类别数
+        self.refresh_num_classes_from_data_dirs()
+
     def _init_security_configs(self):
         """初始化安全配置"""
         # Image Security Settings - 图像安全设置
@@ -317,15 +320,78 @@ class DefaultConfigs:
         self.safe_max_image_dimension = 10000     # 最大10000像素边长
         self.safe_max_file_size = 100 * 1024 * 1024  # 最大100MB文件
         self.safe_min_file_size = 100              # 最小100字节
-        
+
         # Model Integrity Settings - 模型完整性设置
         self.enable_model_integrity_check = True   # 启用模型哈希验证
         self.model_hash_cache_path = self.paths.log_dir + "model_hashes.json"
-        
+
         # Data Validation Settings - 数据验证设置
         self.enable_path_traversal_protection = True  # 启用路径遍历保护
         self.enable_label_validation = True           # 启用标签验证
         self.strict_image_validation = True           # 启用严格图像验证
+
+    def refresh_num_classes_from_data_dirs(self) -> int:
+        """从数据目录自动检测类别数量。
+
+        扫描训练数据目录，统计子文件夹数量作为类别数。
+        如果数据目录不存在或无法访问，保持配置中的默认值。
+
+        Returns:
+            检测到的类别数量
+        """
+        # 可能的训练数据目录
+        candidate_dirs = []
+
+        # 如果启用了数据集合并，优先检查合并后的训练目录
+        if getattr(self, 'merge_datasets', False) or getattr(self, 'merge_train_datasets', False):
+            if hasattr(self, 'paths') and self.paths.merged_train_dir:
+                candidate_dirs.append(self.paths.merged_train_dir)
+
+        candidate_dirs.extend([
+            self.train_data if hasattr(self, 'train_data') and self.train_data else None,
+            self.paths.train_dir if hasattr(self, 'paths') else None,
+        ])
+
+        detected_classes = 0
+
+        for data_dir in candidate_dirs:
+            if not data_dir or not os.path.exists(data_dir):
+                continue
+
+            try:
+                # 统计子目录数量（每个子目录代表一个类别）
+                subdirs = [
+                    d for d in os.listdir(data_dir)
+                    if os.path.isdir(os.path.join(data_dir, d))
+                ]
+
+                # 过滤出有效的类别目录（名称应该是数字）
+                valid_classes = []
+                for subdir in subdirs:
+                    try:
+                        label = int(subdir)
+                        if label >= 0:
+                            valid_classes.append(label)
+                    except ValueError:
+                        # 非数字目录名，跳过
+                        continue
+
+                if valid_classes:
+                    # 类别数 = 最大标签值 + 1
+                    detected_classes = max(valid_classes) + 1
+                    break
+            except (OSError, PermissionError) as e:
+                print(f"Warning: Cannot access data directory {data_dir}: {e}")
+                continue
+
+        if detected_classes > 0:
+            if detected_classes != self.num_classes:
+                print(f"Updating num_classes from {self.num_classes} to {detected_classes} (detected from data directory)")
+                self.num_classes = detected_classes
+        else:
+            print(f"Could not detect num_classes from data directories, using config value: {self.num_classes}")
+
+        return self.num_classes
 
 config = DefaultConfigs()
 paths = config.paths
