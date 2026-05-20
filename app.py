@@ -20,6 +20,10 @@ DEFAULT_MODEL_URL = (
     "https://github.com/SSC-STUDIO/Plants-Disease-Detection/releases/download/"
     "convnext-small-filtered-v0.1/best_model.pth.tar"
 )
+DEFAULT_LABELS_URL = (
+    "https://github.com/SSC-STUDIO/Plants-Disease-Detection/releases/download/"
+    "convnext-small-filtered-v0.1/training_filtered_labels.json"
+)
 DEFAULT_MODEL_PATH = Path("checkpoints/best/convnext_small/0/best_model.pth.tar")
 DEFAULT_LABELS_PATH = Path("reports/training_filtered_labels.json")
 
@@ -34,6 +38,11 @@ def parse_args() -> argparse.Namespace:
         default=os.getenv("PLANT_DISEASE_MODEL_URL", DEFAULT_MODEL_URL),
         help="Checkpoint URL used when --download is set",
     )
+    parser.add_argument(
+        "--labels-url",
+        default=os.getenv("PLANT_DISEASE_LABELS_URL", DEFAULT_LABELS_URL),
+        help="Label mapping URL used when --download is set",
+    )
     parser.add_argument("--download", action="store_true", help="Download checkpoint if it is missing")
     parser.add_argument("--device", choices=["auto", "cuda", "cpu"], default="auto", help="Inference device")
     parser.add_argument("--share", action="store_true", help="Create a public Gradio share URL")
@@ -42,18 +51,18 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def maybe_download_model(model_path: Path, url: str) -> None:
-    if model_path.exists():
+def maybe_download_file(target_path: Path, url: str) -> None:
+    if target_path.exists():
         return
-    model_path.parent.mkdir(parents=True, exist_ok=True)
+    target_path.parent.mkdir(parents=True, exist_ok=True)
     with requests.get(url, stream=True, timeout=60) as response:
         response.raise_for_status()
-        with tempfile.NamedTemporaryFile(delete=False, dir=str(model_path.parent)) as tmp:
+        with tempfile.NamedTemporaryFile(delete=False, dir=str(target_path.parent)) as tmp:
             tmp_path = Path(tmp.name)
             for chunk in response.iter_content(chunk_size=1024 * 1024):
                 if chunk:
                     tmp.write(chunk)
-    tmp_path.replace(model_path)
+    tmp_path.replace(target_path)
 
 
 def load_labels(path: Path) -> Dict[int, str]:
@@ -65,7 +74,12 @@ def load_labels(path: Path) -> Dict[int, str]:
     if isinstance(payload, dict):
         if "labels" in payload and isinstance(payload["labels"], dict):
             payload = payload["labels"]
-        return {int(key): str(value) for key, value in payload.items()}
+        labels = {}
+        for key, value in payload.items():
+            if isinstance(value, dict):
+                value = value.get("name", value.get("label", value.get("id", key)))
+            labels[int(key)] = str(value)
+        return labels
     if isinstance(payload, list):
         return {idx: str(value) for idx, value in enumerate(payload)}
     return {}
@@ -75,8 +89,10 @@ def build_demo(args: argparse.Namespace):
     import gradio as gr
 
     model_path = Path(args.model)
+    labels_path = Path(args.labels)
     if args.download:
-        maybe_download_model(model_path, args.download_url)
+        maybe_download_file(model_path, args.download_url)
+        maybe_download_file(labels_path, args.labels_url)
     if not model_path.exists():
         raise FileNotFoundError(
             f"Model checkpoint not found: {model_path}. "
@@ -86,7 +102,7 @@ def build_demo(args: argparse.Namespace):
     cfg = DefaultConfigs()
     cfg.model_name = args.model_name
     device = None if args.device == "auto" else args.device
-    labels = load_labels(Path(args.labels))
+    labels = load_labels(labels_path)
 
     manager = InferenceManager(
         model_path=str(model_path),

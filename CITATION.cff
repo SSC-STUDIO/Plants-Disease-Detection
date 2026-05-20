@@ -1,0 +1,18 @@
+cff-version: 1.2.0
+title: "Plants Disease Detection"
+message: "If you use this project in a paper, course project, or demo, please cite the repository and the upstream datasets you used."
+type: software
+authors:
+  - name: "SSC-STUDIO"
+repository-code: "https://github.com/SSC-STUDIO/Plants-Disease-Detection"
+url: "https://github.com/SSC-STUDIO/Plants-Disease-Detection/releases/tag/convnext-small-filtered-v0.1"
+license: "MIT"
+version: "convnext-small-filtered-v0.1"
+date-released: "2026-05-20"
+keywords:
+  - plant disease
+  - computer vision
+  - agriculture
+  - pytorch
+  - education
+abstract: "Open plant disease image-classification toolkit with reproducible PyTorch training, dataset provenance tools, model and dataset cards, and an education-friendly Web Demo."

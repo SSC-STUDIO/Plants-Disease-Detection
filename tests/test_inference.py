@@ -2,6 +2,7 @@ import torch
 
 from config import DefaultConfigs
 from libs.inference import InferenceManager
+from app import load_labels
 
 
 def test_inference_load_model_syncs_num_classes_from_checkpoint(monkeypatch, temp_dir):
@@ -49,3 +50,16 @@ def test_inference_load_model_syncs_num_classes_from_checkpoint(monkeypatch, tem
 
     assert captured["num_classes"] == 117
     assert cfg.num_classes == 117
+
+
+def test_app_load_labels_supports_release_mapping(temp_dir):
+    labels_path = temp_dir / "labels.json"
+    labels_path.write_text(
+        '{"0": {"id": 0, "name": "Apple___healthy"}, "1": {"id": 1, "name": "Tomato___Late_blight"}}',
+        encoding="utf-8",
+    )
+
+    assert load_labels(labels_path) == {
+        0: "Apple___healthy",
+        1: "Tomato___Late_blight",
+    }
