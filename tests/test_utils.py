@@ -2,7 +2,7 @@
 import torch
 
 from config import DefaultConfigs
-from utils.utils import build_transforms, get_loss_function, get_optimizer, get_scheduler
+from utils.utils import build_transforms, get_loss_function, get_optimizer, get_scheduler, handle_datasets
 
 
 class TestTransforms:
@@ -67,3 +67,20 @@ class TestSchedulers:
         optimizer = torch.optim.AdamW(model.parameters(), lr=0.001)
         scheduler = get_scheduler(optimizer, num_epochs=2, steps_per_epoch=2, cfg=cfg)
         assert scheduler is not None
+
+
+class TestDatasetSelection:
+    def test_custom_dataset_uses_labeled_test_split_as_validation(self, temp_dir):
+        dataset_root = temp_dir / "external"
+        (dataset_root / "train" / "0").mkdir(parents=True)
+        (dataset_root / "test" / "0").mkdir(parents=True)
+        (dataset_root / "train" / "0" / "sample.jpg").write_bytes(b"image")
+        (dataset_root / "test" / "0" / "sample.jpg").write_bytes(b"image")
+
+        cfg = DefaultConfigs()
+        cfg.dataset_path = str(dataset_root)
+        cfg.use_custom_dataset_path = True
+
+        selected = handle_datasets(data_type="val", cfg=cfg)
+
+        assert selected == str(dataset_root / "test")

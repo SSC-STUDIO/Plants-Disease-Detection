@@ -867,8 +867,19 @@ def handle_datasets(
         最终使用的数据集路径或数据集路径列表
     """
     cfg = cfg or config
-    base_dir = cfg.paths.data_dir
+    base_dir = cfg.dataset_path if getattr(cfg, "use_custom_dataset_path", False) and getattr(cfg, "dataset_path", None) else cfg.paths.data_dir
     target_dirs = []
+
+    def has_numeric_class_dirs(directory: str) -> bool:
+        if not directory or not os.path.isdir(directory):
+            return False
+        try:
+            return any(
+                name.isdigit() and os.path.isdir(os.path.join(directory, name))
+                for name in os.listdir(directory)
+            )
+        except OSError:
+            return False
     
     # 确定当前数据类型的合并设置
     should_merge = False
@@ -957,6 +968,16 @@ def handle_datasets(
         # 搜索验证数据集目录
         val_dirs = [d for d in glob.glob(f"{base_dir}/**/val", recursive=True)]
         target_dirs.extend(val_dirs)
+
+        if (
+            not target_dirs
+            and getattr(cfg, "use_custom_dataset_path", False)
+            and getattr(cfg, "dataset_path", None)
+        ):
+            labeled_test_dir = os.path.join(base_dir, "test")
+            if has_numeric_class_dirs(labeled_test_dir):
+                logger.info(f"Using labeled test split as validation dataset: {labeled_test_dir}")
+                target_dirs.append(labeled_test_dir)
     
     logger.info(f"Found {len(target_dirs)} {data_type} datasets: {target_dirs}")
     

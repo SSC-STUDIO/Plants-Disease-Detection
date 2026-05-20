@@ -35,7 +35,6 @@ def summarize_dataset(
 
     cfg = cfg or config
     image_extensions = get_image_extensions(cfg=cfg)
-    num_classes = num_classes or cfg.num_classes
     class_dirs = [
         d for d in os.listdir(data_path)
         if os.path.isdir(os.path.join(data_path, d))
@@ -62,6 +61,10 @@ def summarize_dataset(
             str(k): v for k, v in sorted(class_counts.items(), key=lambda item: item[0])
         }
         result["total_images"] = sum(class_counts.values())
+
+        if num_classes is None:
+            num_classes = max(class_counts.keys()) + 1 if class_counts else cfg.num_classes
+        result["num_classes"] = num_classes
 
         expected_classes = set(range(num_classes))
         missing = sorted(list(expected_classes - set(class_counts.keys())))

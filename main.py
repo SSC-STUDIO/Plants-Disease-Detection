@@ -392,6 +392,9 @@ def apply_train_overrides(args: argparse.Namespace, cfg=None) -> None:
     )
     set_if_not_none('weighted_sampler_power', 'weighted_sampler_power', 'weighted sampler power')
     set_if_not_none('tta_views', 'tta_views', 'TTA views')
+    set_if_not_none('max_train_batches', 'max_train_batches', 'max train batches')
+    set_if_not_none('max_val_batches', 'max_val_batches', 'max validation batches')
+    set_if_true('no_image_validation', 'enable_image_validation', 'Disabling startup image validation')
 
     set_if_true('no_early_stopping', 'use_early_stopping', 'Disabling early stopping')
     set_if_not_none('patience', 'early_stopping_patience', 'early stopping patience')
@@ -542,6 +545,12 @@ def add_train_arguments(train_parser: argparse.ArgumentParser) -> None:
                              help='Label smoothing coefficient (default: from config)')
     train_parser.add_argument('--no-gradient-checkpointing', action='store_true',
                              help='Disable gradient checkpointing')
+    train_parser.add_argument('--max-train-batches', type=int,
+                             help='Debug/CI only: limit train batches per epoch')
+    train_parser.add_argument('--max-val-batches', type=int,
+                             help='Debug/CI only: limit validation batches per epoch')
+    train_parser.add_argument('--no-image-validation', action='store_true',
+                             help='Skip full dataset image validation during DataLoader startup')
 
 def setup_parser() -> argparse.ArgumentParser:
     """设置命令行参数解析器
@@ -642,6 +651,8 @@ def setup_parser() -> argparse.ArgumentParser:
                              help='Number of test-time augmentation views to average during evaluation')
     eval_parser.add_argument('--output-dir', type=str,
                              help=f'Output directory for evaluation reports (default: {paths.report_dir})')
+    eval_parser.add_argument('--output', type=str,
+                             help='Optional JSON file path for the evaluation summary')
     eval_parser.add_argument('--no-confusion', action='store_true',
                              help='Skip confusion matrix output')
     eval_parser.add_argument('--no-report', action='store_true',
@@ -780,7 +791,8 @@ def train_pipeline(args: argparse.Namespace) -> None:
     
     # 首先检查是否需要数据准备
     should_prepare = getattr(args, 'prepare', False)
-    if getattr(args, 'no_prepare', False):
+    no_prepare = getattr(args, 'no_prepare', False)
+    if no_prepare:
         if should_prepare:
             logger.warning("Both --prepare and --no-prepare specified, using --no-prepare")
         should_prepare = False
@@ -800,13 +812,15 @@ def train_pipeline(args: argparse.Namespace) -> None:
             cleanup=True  # 启用清理临时文件
         )
         prepare_data(prepare_args, cfg=config)
-    else:
+    elif not no_prepare:
         # 检查测试数据是否存在，不存在时仅处理测试数据
         test_images_path = normalize_path(paths.test_images_dir)
         if not has_image_files(test_images_path):
             logger.warning(f"Test image directory does not exist or is empty: {test_images_path}")
             logger.info("Preparing test data only")
             prepare_test_data(custom_dataset_path=getattr(args, 'dataset_path', None), cfg=config)
+    else:
+        logger.info("Skipping data preparation because --no-prepare was specified")
     
     # 根据命令行参数覆盖配置
     apply_train_overrides(args, cfg=config)
@@ -975,6 +989,7 @@ def run_evaluation(args) -> None:
             topk=getattr(args, 'topk', 2),
             tta_views=getattr(args, 'tta_views', None),
             output_dir=getattr(args, 'output_dir', None),
+            output_file=getattr(args, 'output', None),
             save_confusion=not getattr(args, 'no_confusion', False),
             save_report=not getattr(args, 'no_report', False),
             cfg=config,

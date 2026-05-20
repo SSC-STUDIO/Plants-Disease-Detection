@@ -18,6 +18,9 @@ psutil>=5.9.0
 PyYAML>=6.0
 requests>=2.32.0
 python-dotenv>=0.19.0
+huggingface_hub>=0.23.0
+pyarrow>=16.0.0
+gradio>=4.44.0
 efficientnet-pytorch>=0.7.1
 # 替换未维护的 lookahead 包 - 使用 PyTorch 原生实现
 # torch.optim.Lookahead 在 PyTorch 2.0+ 中可用

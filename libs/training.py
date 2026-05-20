@@ -232,6 +232,9 @@ class Trainer:
         cleanup_memory(self.device)
         
         for iter, batch in enumerate(progress_bar):
+            if self.config.max_train_batches is not None and iter >= self.config.max_train_batches:
+                self.logger.info(f"Stopping epoch {epoch} after {self.config.max_train_batches} train batches")
+                break
             try:
                 if consecutive_errors >= max_errors:
                     log.write(f"Too many consecutive errors ({consecutive_errors}), stopping training\n")
@@ -753,7 +756,10 @@ class Trainer:
         
         with torch.no_grad():
             pbar = tqdm(val_loader, desc=f'Validation Epoch {epoch}')
-            for input, target in pbar:
+            for iter, (input, target) in enumerate(pbar):
+                if self.config.max_val_batches is not None and iter >= self.config.max_val_batches:
+                    self.logger.info(f"Stopping validation epoch {epoch} after {self.config.max_val_batches} batches")
+                    break
                 input = input.to(self.device)
                 target = torch.tensor(target).to(self.device)
                 
@@ -1011,5 +1017,5 @@ def train_model(cfg=None, force_train: bool = False):
         trainer = Trainer(cfg or config)
         return trainer.train(force_train=force_train)
     except Exception as e:
-        logging.error(f"Error in training: {str(e)}")
+        logging.exception(f"Error in training: {str(e)}")
         return {"error": str(e)} 

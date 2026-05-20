@@ -4,6 +4,7 @@
 #   .\run_training.ps1 -OfflineWeights    # 离线模式，不下载预训练权重
 #   .\run_training.ps1 -ForceTrain        # 强制从头训练
 #   .\run_training.ps1 -Epochs 100        # 指定训练轮数
+#   .\run_training.ps1 -HfEndpoint https://hf-mirror.com  # 使用 Hugging Face 镜像
 
 param(
     [switch]$OfflineWeights,    # 离线模式：禁用预训练权重下载
@@ -12,6 +13,7 @@ param(
     [string]$Model = "",        # 模型名称（空表示使用配置文件中的值）
     [int]$BatchSize = 0,        # 批次大小（0表示使用配置文件中的值）
     [string]$DataDir = "",      # 数据目录（空表示使用配置文件中的值）
+    [string]$HfEndpoint = "https://hf-mirror.com",  # Hugging Face Hub endpoint/mirror
     [switch]$Help              # 显示帮助信息
 )
 
@@ -30,12 +32,14 @@ if ($Help) {
     -Model <name>      指定模型名称（如 convnextv2_base_384, efficientnetv2_s）
     -BatchSize <n>     指定批次大小
     -DataDir <path>    指定数据目录
+    -HfEndpoint <url>   Hugging Face Hub endpoint；国内推荐 https://hf-mirror.com
     -Help               显示此帮助信息
 
 示例:
     .\run_training.ps1
     .\run_training.ps1 -OfflineWeights -Epochs 50
     .\run_training.ps1 -Model efficientnetv2_s -BatchSize 16
+    .\run_training.ps1 -HfEndpoint https://hf-mirror.com -ForceTrain -Epochs 30
 "@
     exit 0
 }
@@ -93,6 +97,10 @@ if ($OfflineWeights) {
     $env:HF_HUB_OFFLINE = $null
     $env:TRANSFORMERS_OFFLINE = $null
     $env:PLANT_DISEASE_PRETRAINED = "1"
+    if ($HfEndpoint -ne "") {
+        $env:HF_ENDPOINT = $HfEndpoint
+        Write-Host "Hugging Face endpoint: $env:HF_ENDPOINT" -ForegroundColor Cyan
+    }
 }
 
 # CUDA 设置
@@ -138,6 +146,7 @@ Write-Host @"
 模型: $(if ($Model -ne "") { $Model } else { "使用配置文件默认值" })
 批次大小: $(if ($BatchSize -gt 0) { $BatchSize } else { "使用配置文件默认值" })
 数据目录: $(if ($DataDir -ne "") { $DataDir } else { "使用配置文件默认值" })
+HF Endpoint: $(if ($env:HF_ENDPOINT) { $env:HF_ENDPOINT } else { "默认 Hugging Face" })
 ========================================
 "@ -ForegroundColor Cyan
 
@@ -173,5 +182,6 @@ try {
 $env:HF_HUB_OFFLINE = $null
 $env:TRANSFORMERS_OFFLINE = $null
 $env:PLANT_DISEASE_PRETRAINED = $null
+$env:HF_ENDPOINT = $null
 
 exit $exitCode

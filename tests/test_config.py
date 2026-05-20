@@ -10,10 +10,25 @@ class TestConfigValidation:
     def test_default_config_creation(self):
         cfg = DefaultConfigs()
         assert cfg is not None
-        assert cfg.num_classes == 59
+        assert cfg.num_classes >= 1
         assert cfg.img_height == 384
         assert cfg.img_width == 384
         assert cfg.progressive_resizing is False
+
+    def test_num_classes_syncs_from_train_directory(self, temp_dir):
+        for class_id in [0, 1, 60]:
+            (temp_dir / "train" / str(class_id)).mkdir(parents=True)
+
+        cfg = DefaultConfigs()
+        cfg.paths.merged_train_dir = str(temp_dir / "missing_merged").replace("\\", "/")
+        cfg.paths.train_dir = str(temp_dir / "train").replace("\\", "/")
+        cfg.train_data = cfg.paths.train_dir
+        cfg.num_classes = 186
+
+        detected = cfg.refresh_num_classes_from_data_dirs()
+
+        assert detected == 61
+        assert cfg.num_classes == 61
 
     def test_num_workers_auto(self):
         cfg = DefaultConfigs()
