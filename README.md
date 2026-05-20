@@ -32,6 +32,17 @@ python app.py --download
 - Model and dataset cards that make results easier to audit, publish, and teach from.
 - A Gradio Web Demo for quick classroom, paper, and portfolio use.
 
+## Start Here
+
+- Fast setup: `docs/QUICKSTART.md`
+- Web Demo: `python app.py --download`
+- Model details: `MODEL_CARD.md`
+- Dataset details: `DATASET_CARD.md`
+- Course guide: `docs/EDUCATION.md`
+- Paper/course template: `docs/PAPER_PROJECT.md`
+- Contributing: `CONTRIBUTING.md`
+- Citation: `CITATION.cff`
+
 ## Current Baseline Plan
 
 The recommended local baseline is designed for an 8 GB GPU such as an RTX 4060 Laptop GPU:
@@ -67,7 +78,7 @@ Run the Web Demo with a local or release checkpoint:
 python app.py --download
 ```
 
-Then open `http://127.0.0.1:7860`.
+Then open `http://127.0.0.1:7860`. The command downloads both the release checkpoint and the label mapping when they are missing.
 
 If Hugging Face downloads are slow or blocked, use a mirror before training:
 

@@ -12,6 +12,8 @@ This guide turns the project into a short applied computer vision lesson.
 6. Review `DATASET_CARD.md` and `MODEL_CARD.md` as examples of responsible AI documentation.
 7. Run `app.py` and discuss model confidence on student-provided leaf images.
 
+For a complete written assignment scaffold, see `docs/PAPER_PROJECT.md`.
+
 ## Classroom Commands
 
 ```powershell
