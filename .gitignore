@@ -40,7 +40,7 @@ venv.bak/
 .settings/
 
 # 项目特定文件和目录
-data/
+data/*
 log/
 submit/
 aug/
@@ -101,6 +101,7 @@ temp/
 
 # 取消忽略特定文件
 !data/.gitkeep
+!data/sources.yaml
 !logs/.gitkeep
 !submit/.gitkeep
 !aug/.gitkeep 

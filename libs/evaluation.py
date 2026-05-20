@@ -11,7 +11,8 @@ from torch.utils.data import DataLoader
 from sklearn.metrics import classification_report, confusion_matrix
 
 from config import config, DefaultConfigs
-from dataset.dataloader import PlantDiseaseDataset, get_files
+from dataset.dataloader import PlantDiseaseDataset, collate_fn, get_files
+from libs.checkpoint_utils import infer_num_classes_from_checkpoint
 from libs.inference import InferenceManager
 from models.model import get_net
 from utils.utils import AverageMeter, accuracy, get_loss_function, handle_datasets
@@ -68,6 +69,58 @@ def _infer_model_name(model_path: str) -> Optional[str]:
     return None
 
 
+def _infer_num_classes_from_labeled_dir(data_dir: Optional[str]) -> Optional[int]:
+    """Infer class count from numeric class directories."""
+    if not data_dir or not os.path.isdir(data_dir):
+        return None
+
+    labels = []
+    for entry in os.listdir(data_dir):
+        entry_path = os.path.join(data_dir, entry)
+        if not os.path.isdir(entry_path):
+            continue
+        try:
+            label = int(entry)
+        except ValueError:
+            continue
+        if label >= 0:
+            labels.append(label)
+
+    if not labels:
+        return None
+    return max(labels) + 1
+
+
+def _sync_num_classes_for_evaluation(
+    model_path: Optional[str],
+    data_dir: Optional[str],
+    cfg: DefaultConfigs,
+    logger: logging.Logger,
+) -> int:
+    """Keep evaluation model head size aligned with checkpoint/custom data."""
+    checkpoint_classes = infer_num_classes_from_checkpoint(model_path)
+    dataset_classes = _infer_num_classes_from_labeled_dir(data_dir)
+    detected_classes = checkpoint_classes or dataset_classes
+
+    if checkpoint_classes and dataset_classes and checkpoint_classes != dataset_classes:
+        logger.warning(
+            "Checkpoint class count (%s) differs from dataset directory inference (%s); "
+            "using checkpoint class count.",
+            checkpoint_classes,
+            dataset_classes,
+        )
+
+    if detected_classes and detected_classes != cfg.num_classes:
+        logger.info(
+            "Updating num_classes from %s to %s for evaluation",
+            cfg.num_classes,
+            detected_classes,
+        )
+        cfg.num_classes = detected_classes
+
+    return cfg.num_classes
+
+
 def _load_model(
     model_path: str,
     device: torch.device,
@@ -109,6 +162,7 @@ def evaluate_model(
     topk: int = 2,
     tta_views: Optional[int] = None,
     output_dir: Optional[str] = None,
+    output_file: Optional[str] = None,
     save_confusion: bool = True,
     save_report: bool = True,
     cfg: Optional[DefaultConfigs] = None,
@@ -134,6 +188,10 @@ def evaluate_model(
     if not os.path.exists(data_dir):
         raise FileNotFoundError(f"Evaluation data directory not found: {data_dir}")
 
+    cfg.dataset_path = data_dir
+    cfg.use_custom_dataset_path = True
+    _sync_num_classes_for_evaluation(model_path, data_dir, cfg, logger)
+
     logger.info(f"Evaluating model: {model_path}")
     logger.info(f"Model architecture: {model_name}")
     logger.info(f"Evaluation data: {data_dir}")
@@ -145,7 +203,7 @@ def evaluate_model(
     tta_helper.model = model
     tta_helper.device = eval_device
 
-    eval_files = get_files(data_dir, mode="val")
+    eval_files = get_files(data_dir, mode="val", cfg=cfg)
     eval_dataset = PlantDiseaseDataset(
         eval_files,
         sampling_threshold=cfg.sampling_threshold,
@@ -166,7 +224,7 @@ def evaluate_model(
         shuffle=False,
         num_workers=cfg.num_workers if num_workers is None else num_workers,
         pin_memory=eval_device.type == "cuda",
-        collate_fn=lambda batch: (torch.stack([x[0] for x in batch], 0), [x[1] for x in batch]),
+        collate_fn=collate_fn,
     )
 
     criterion = get_loss_function(eval_device, cfg=cfg)
@@ -209,6 +267,10 @@ def evaluate_model(
     summary_path = os.path.join(run_dir, "eval_summary.json")
     with open(summary_path, "w", encoding="utf-8") as f:
         json.dump(summary, f, ensure_ascii=False, indent=2)
+    if output_file:
+        os.makedirs(os.path.dirname(output_file) or ".", exist_ok=True)
+        with open(output_file, "w", encoding="utf-8") as f:
+            json.dump(summary, f, ensure_ascii=False, indent=2)
 
     if save_report:
         report = classification_report(
@@ -228,4 +290,6 @@ def evaluate_model(
         _write_confusion_matrix(cm_path, matrix, labels)
 
     logger.info(f"Evaluation summary saved to: {summary_path}")
+    if output_file:
+        logger.info(f"Evaluation summary also saved to: {output_file}")
     return summary

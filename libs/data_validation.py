@@ -73,6 +73,16 @@ class DataSanitizer:
         """
         if not filename:
             return "", "Empty filename"
+
+        if self.base_path:
+            try:
+                abs_base = os.path.abspath(self.base_path)
+                abs_name = os.path.abspath(filename)
+                common_path = os.path.commonpath([abs_base, abs_name])
+                if common_path == abs_base:
+                    return os.path.normpath(filename), None
+            except (OSError, ValueError):
+                pass
         
         # 检查路径遍历
         if self.path_traversal_regex.search(filename):
@@ -142,7 +152,11 @@ class DataSanitizer:
                 abs_path = os.path.abspath(sanitized_path)
                 
                 # 检查路径是否在基础目录内
-                if not abs_path.startswith(abs_base + os.sep) and abs_path != abs_base:
+                try:
+                    common_path = os.path.commonpath([abs_base, abs_path])
+                except ValueError:
+                    common_path = ""
+                if common_path != abs_base:
                     return DataValidationResult(
                         False,
                         [f"File path '{file_path}' is outside the allowed directory"],

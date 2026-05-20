@@ -243,6 +243,8 @@ class DefaultConfigs:
     progressive_epochs: int = 15  # 渐进式缩放过渡轮数
     progressive_sizes: List[int] = field(default_factory=lambda: [224, 320, 380])  # 渐进式缩放的图像尺寸
     tta_views: int = 4  # 推理阶段测试时增强视角数，支持 1/2/3/4
+    max_train_batches: Optional[int] = None  # 调试/CI用：每个epoch最多训练多少个batch，None表示不限制
+    max_val_batches: Optional[int] = None  # 调试/CI用：每个epoch最多验证多少个batch，None表示不限制
 
     def __post_init__(self):
         """初始化后的验证和设置"""
@@ -346,6 +348,12 @@ class DefaultConfigs:
         if getattr(self, 'merge_datasets', False) or getattr(self, 'merge_train_datasets', False):
             if hasattr(self, 'paths') and self.paths.merged_train_dir:
                 candidate_dirs.append(self.paths.merged_train_dir)
+
+        if getattr(self, 'use_custom_dataset_path', False) and getattr(self, 'dataset_path', None):
+            candidate_dirs.extend([
+                os.path.join(self.dataset_path, "train"),
+                self.dataset_path,
+            ])
 
         candidate_dirs.extend([
             self.train_data if hasattr(self, 'train_data') and self.train_data else None,

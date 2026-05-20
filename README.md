@@ -1,186 +1,349 @@
 # Plants Disease Detection
 
-植物病害检测系统，基于深度学习技术实现高效的病害分类。
+Open plant disease image-classification toolkit built with PyTorch. The project focuses on reproducible training, clear dataset provenance, and education-friendly workflows for learning applied computer vision in agriculture.
 
-## 功能特性
+## Current Public Baseline
 
-- 支持多种深度学习模型
-- 数据增强和预处理
-- 训练过程可视化
-- 模型评估和测试
+This repository now includes code, dataset tooling, training logs, a local Web Demo, and release-ready model documentation.
 
-## 运行方式
+| Model | Dataset | Classes | Validation images | Top-1 | Top-2 | Checkpoint |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| `convnext_small` | filtered open training layout | 117 | 7,307 | 95.4564% | 98.0703% | GitHub Release asset |
 
-### 标准版本
-```bash
-python main.py
-```
+Artifacts from the reproducible local run are stored under `reports/train_run_filtered_convnext_small/`:
 
-### Smoke（语法编译）
+- `config.json`
+- `metrics.json`
+- `eval.json`
+- `eval/*/confusion_matrix.csv`
+
+The trained checkpoint is intentionally not committed to Git because it is about 299 MB. Download it from the release asset or train it locally:
+
 ```powershell
-.\scripts\smoke_py_compile.ps1
+python app.py --download
 ```
-详见 `docs/RUN_SMOKE.md`；变更记录见 `CHANGELOG.md`。
 
-改进版本包含以下优化：
-- 自适应学习率调度
-- 类别不平衡处理
-- 混合精度训练
-- 梯度裁剪
-- 更详细的训练统计
-- 默认主力模型升级为 ConvNeXt V2 Base 384
-- 加入 Weighted Random Sampler 做类别均衡采样
-- 推理支持最多 4 视角 TTA 概率平均
-- 训练增广升级为 RandomResizedCrop + RandAugment + ColorJitter + RandomErasing
+## What This Project Provides
 
-### 新增命令（全面升级）
-```bash
-# 查看版本与环境信息（JSON）
+- Reproducible PyTorch training for plant disease classification.
+- Dataset provenance tooling that separates redistributable public data from local or restricted research data.
+- Training, evaluation, prediction, and dataset statistics commands from one CLI.
+- Data collection and conversion tools for local images, PlantVillage-style classification data, PlantDoc-style detection data, and archived challenge datasets.
+- Model and dataset cards that make results easier to audit, publish, and teach from.
+- A Gradio Web Demo for quick classroom, paper, and portfolio use.
+
+## Current Baseline Plan
+
+The recommended local baseline is designed for an 8 GB GPU such as an RTX 4060 Laptop GPU:
+
+- Model: `convnextv2_base_384`
+- Image size: `384 x 384`
+- Batch size: `8`
+- Epochs: `30` for the first reproducible baseline, then `50` for a longer run
+- Mixed precision: enabled
+- Gradient checkpointing: enabled
+- Weighted sampler: enabled
+- Seed: `888`
+- Experiment tracking: local files by default, W&B disabled
+
+## Quick Start
+
+```powershell
+git clone https://github.com/SSC-STUDIO/Plants-Disease-Detection.git
+cd Plants-Disease-Detection
+python -m pip install -r requirements.txt
+```
+
+Check the environment and available commands:
+
+```powershell
 python main.py version
-
-# 只输出项目版本
-python main.py --version
-
-# 导出当前配置
-python main.py config --output ./reports/config.json
-
-# 列出可用模型
 python main.py models
-
-# 评估模型（生成指标报告）
-python main.py evaluate --model checkpoints/best/convnextv2_base_384/0/best_model.pth.tar
-
-# 评估时同样支持 TTA
-python main.py evaluate --model checkpoints/best/convnextv2_base_384/0/best_model.pth.tar --tta-views 4
-
-# 数据集统计（输出类别分布与缺失类别）
-python main.py stats --data ./data/train --output ./reports/train_stats.json
-
-# 推理增强（输出Top-K与完整概率）
-python main.py predict --input ./data/test/images --output ./submit/prediction_full.json --output-format full --topk 5 --save-probs
-
-# 使用 4 视角 TTA 提升推理稳健性
-python main.py predict --input ./data/test/images --tta-views 4
-
-# 如类别分布很不均衡，显式启用加权采样训练
-python main.py train --enable-weighted-sampler
 ```
 
-## 安装依赖
-
-> 运行环境：Python 3.14.x（与 `pyproject.toml` 的 requires-python 保持一致）。
-
-```bash
-uv sync
-```
-
-如果系统没有 `uv`（或 `uv` 不在 PATH）：
-```bash
-python -m pip install uv
-python -m uv sync
-```
-
-如果不使用 `uv`，可直接用 `pip`：
-```bash
-python -m pip install -r requirements.txt
-```
-
-可选扩展依赖：
-```bash
-python -m pip install -r requirements-extras.txt
-```
-
-说明：当前推荐使用最新稳定版 Python 3.14.x（截至 2026-02-03 为 3.14.3）。若在 Windows 上遇到 PyTorch 兼容性问题，可临时回退到 3.13。
-
-快速创建虚拟环境（无 uv）：
-```bash
-py -3.14 -m venv .venv
-.\.venv\Scripts\activate
-python -m pip install -r requirements.txt
-```
-
-## 数据集方案
-
-数据集策略文档见 `docs/DATASET_STRATEGY.md`。
-
-当前已经实际组装好的本地数据包在：
-
-- `C:\Users\96152\My-Project\Datasets\PlantDisease-10GB-Bundle`
-
-它会把项目自带数据和已有公开数据汇总到一个统一入口，当前逻辑体量约 `11.005 GB`。数据包清单见：
-
-- `C:\Users\96152\My-Project\Datasets\PlantDisease-10GB-Bundle\manifest.json`
-
-重新生成该数据包：
+Run the Web Demo with a local or release checkpoint:
 
 ```powershell
-python tools/dataset_collector/build_dataset_bundle.py
+python app.py --download
 ```
 
-此外已经生成两个可直接训练的处理后数据集：
+Then open `http://127.0.0.1:7860`.
 
-- `C:\Users\96152\My-Project\Datasets\Processed\AI-Challenger-PDR2018-Classification`
-- `C:\Users\96152\My-Project\Datasets\Processed\PlantDoc-Crops-Classification`
-
-用新的 headless 采集器清洗本地自制数据：
+If Hugging Face downloads are slow or blocked, use a mirror before training:
 
 ```powershell
-python tools/dataset_collector/app.py `
-  --headless `
-  --source-dir C:\path\to\raw_leaf_images `
-  --output-dir C:\path\to\prepared_dataset `
-  --quality-filter `
-  --deduplicate `
-  --enable-size-filter `
-  --generate-manifest
+$env:HF_ENDPOINT = "https://hf-mirror.com"
+$env:PLANT_DATA_ROOT = "$PWD\.datasets"
 ```
 
-把 AI Challenger 压缩包转成分类目录：
+Summarize the current training split:
 
 ```powershell
-python tools/dataset_collector/convert_ai_challenger.py --overwrite
+python main.py stats --data ./data/train --output reports/dataset_stats.json
 ```
 
-把 PlantDoc 检测框转成分类裁剪图：
+Run the reproducible baseline:
 
 ```powershell
-python tools/dataset_collector/extract_plantdoc_crops.py --overwrite
+python main.py train `
+  --model convnextv2_base_384 `
+  --epochs 30 `
+  --batch-size 8 `
+  --dataset-path ./data `
+  --seed 888 `
+  --force-train `
+  --no-wandb
 ```
 
-## 项目结构
+Run a quick GPU smoke test before a long training job:
 
+```powershell
+$env:HF_ENDPOINT = "https://hf-mirror.com"
+python main.py train `
+  --model convnextv2_base_384 `
+  --epochs 1 `
+  --batch-size 8 `
+  --dataset-path ./data `
+  --seed 888 `
+  --force-train `
+  --no-wandb `
+  --no-prepare `
+  --disable-augmentation `
+  --max-train-batches 2 `
+  --max-val-batches 1
 ```
-├── config/          # 配置文件
-├── dataset/         # 数据集处理
-├── libs/            # 训练和推理库
-├── models/          # 模型定义
-├── tools/           # 辅助工具
-├── utils/           # 实用工具
-├── checkpoints/     # 模型检查点
-├── main.py          # 主程序入口
-└── README.md        # 项目说明
+
+Evaluate a trained checkpoint:
+
+```powershell
+python main.py evaluate `
+  --model checkpoints/best/convnextv2_base_384/0/best_model.pth.tar `
+  --output reports/eval.json
 ```
 
-## 模型支持
+Run prediction with test-time augmentation:
 
-- ConvNeXt V2 Base 384（默认推荐）
-- EfficientNet 系列
-- DenseNet169
-- ConvNeXt
-- Swin Transformer
-- 混合模型
+```powershell
+python main.py predict `
+  --input ./data/test/images `
+  --tta-views 4 `
+  --output ./submit/prediction_full.json `
+  --output-format full `
+  --topk 5 `
+  --save-probs
+```
 
-## 当前默认技术路线
+## Dataset Strategy
 
-- 默认训练骨干：`convnextv2_base_384`
-- 默认启用预训练迁移学习
-- 默认更保守的批次大小：`8`
-- `timm` 不可用时会自动回退到 `convnext_small`
-- 默认启用 `WeightedRandomSampler` 缓解长尾类别不平衡
-- 默认训练增广升级为 `RandomResizedCrop + RandAugment + ColorJitter + RandomErasing`
-- 默认推理启用 `4` 视角 TTA
-- 继续训练/推理/评估时不再重复拉取预训练权重，直接加载 checkpoint
+The project uses a source manifest at `data/sources.yaml`. Each source declares:
 
-## 贡献指南
+- `name`
+- `url`
+- `license`
+- `redistributable`
+- `citation`
+- `local_path`
+- `splits`
+- `class_mapping`
 
-欢迎提交Pull Request改进项目。
+Only sources with `redistributable: true` should be exported to a public dataset repository. Restricted or unclear-license sources can still be documented and used locally when their terms allow it, but should not be copied into public releases.
+
+Download PlantVillage through a Hugging Face mirror when GitHub access is slow or blocked:
+
+```powershell
+$env:HF_ENDPOINT = "https://hf-mirror.com"
+$env:PLANT_DATA_ROOT = "$PWD\.datasets"
+python -c "import os; from huggingface_hub import snapshot_download; snapshot_download(repo_id='mohanty/PlantVillage', repo_type='dataset', local_dir=os.path.join(os.environ.get('PLANT_DATA_ROOT', '.datasets'), 'PlantVillage-HF'), resume_download=True)"
+```
+
+Convert the mirrored archive into the numeric classification layout used by the trainer:
+
+```powershell
+python tools/dataset_collector/convert_plantvillage_hf.py `
+  --source-dir "$env:PLANT_DATA_ROOT\PlantVillage-HF" `
+  --output-dir "$env:PLANT_DATA_ROOT\Processed\PlantVillage-Color-Classification" `
+  --overwrite
+
+python tools/dataset_collector/convert_plantvillage_hf.py `
+  --config grayscale `
+  --source-dir "$env:PLANT_DATA_ROOT\PlantVillage-HF" `
+  --output-dir "$env:PLANT_DATA_ROOT\Processed\PlantVillage-Grayscale-Classification" `
+  --overwrite
+
+python tools/dataset_collector/convert_plantvillage_hf.py `
+  --config segmented `
+  --source-dir "$env:PLANT_DATA_ROOT\PlantVillage-HF" `
+  --output-dir "$env:PLANT_DATA_ROOT\Processed\PlantVillage-Segmented-Classification" `
+  --overwrite
+```
+
+The current PlantVillage conversions produce `162,916` images across color, grayscale, and segmented variants. A deterministic robustness variant set adds another `87,776` images from the PlantVillage color split. These sources remain tracked as `redistributable: true` with the `CC BY-SA 3.0` source license.
+
+Optional mirror downloads for larger local-only experiments:
+
+```powershell
+python scripts/download_hf_dataset.py `
+  --repo-id avinashhm/plant-disease-classification-complete `
+  --output-dir "$env:PLANT_DATA_ROOT\PlantDisease-Classification-Complete-HF" `
+  --endpoint https://hf-mirror.com `
+  --allow-pattern README.md `
+  --allow-pattern data/**
+
+python tools/dataset_collector/convert_hf_parquet_image_dataset.py `
+  --source-dir "$env:PLANT_DATA_ROOT\PlantDisease-Classification-Complete-HF" `
+  --output-dir "$env:PLANT_DATA_ROOT\Processed\PlantDisease-Classification-Complete" `
+  --dataset-name PlantDisease-Classification-Complete `
+  --url https://huggingface.co/datasets/avinashhm/plant-disease-classification-complete `
+  --overwrite
+
+python scripts/download_hf_dataset_files.py `
+  --repo-id mbsoft31/agri-foundation-v1 `
+  --output-dir "$env:PLANT_DATA_ROOT\Agri-Foundation-v1-HF" `
+  --endpoint https://hf-mirror.com `
+  --allow-pattern README.md `
+  --allow-pattern data/** `
+  --target-local-gb 3.0
+```
+
+The current full local provenance bundle is `11.177 GB` with `384,278` images. Only sources marked `redistributable: true` are exported publicly; restricted or unclear-license sources stay local.
+
+Build a local provenance-aware bundle:
+
+```powershell
+python tools/dataset_collector/build_dataset_bundle.py `
+  --source-manifest data/sources.yaml `
+  --target-dir "$env:PLANT_DATA_ROOT\PlantDisease-Open-Bundle" `
+  --no-validate-images `
+  --no-hash
+```
+
+Export only redistributable sources into a Hugging Face-ready dataset folder:
+
+```powershell
+python tools/dataset_collector/export_hf_dataset.py `
+  --bundle-dir "$env:PLANT_DATA_ROOT\PlantDisease-Open-Bundle" `
+  --output-dir "$env:PLANT_DATA_ROOT\HF-PlantDisease-Open" `
+  --dataset-repo SSC-STUDIO/plant-disease-open-dataset `
+  --overwrite `
+  --copy-mode link
+```
+
+The export writes:
+
+- `metadata.csv`
+- `labels.json`
+- `provenance.json`
+- `dataset_card.md`
+- `README.md`
+- `data/<split>/<label>/...`
+
+Filter the public export before publishing:
+
+```powershell
+python tools/dataset_collector/filter_dataset_quality.py `
+  --input-dir "$env:PLANT_DATA_ROOT\HF-PlantDisease-Open" `
+  --output-dir "$env:PLANT_DATA_ROOT\HF-PlantDisease-Open-Filtered" `
+  --metadata-csv "$env:PLANT_DATA_ROOT\HF-PlantDisease-Open\metadata.csv" `
+  --copy-mode link `
+  --overwrite `
+  --min-file-size 1024 `
+  --min-dimension 96 `
+  --min-stddev 3.0 `
+  --min-entropy 1.0 `
+  --near-duplicate-hamming 3
+```
+
+The filtered export writes `filter_report.json`, `rejections.csv`, `kept_audit.csv`, and a filtered `metadata.csv`. Use `--near-duplicate-hamming 0` when you want to keep deterministic augmentation variants and remove only corrupt, low-quality, or byte-identical duplicate files.
+
+Drop `--no-validate-images --no-hash` before a public release if you want full image integrity and duplicate scanning.
+
+To pretrain on the expanded public PlantVillage split:
+
+```powershell
+$env:HF_ENDPOINT = "https://hf-mirror.com"
+python main.py train `
+  --model convnextv2_base_384 `
+  --epochs 30 `
+  --batch-size 8 `
+  --dataset-path "$env:PLANT_DATA_ROOT\Processed\PlantVillage-Color-Classification" `
+  --seed 888 `
+  --force-train `
+  --no-wandb `
+  --no-prepare
+```
+
+## Training Artifacts
+
+For each reproducible training run, keep these files together:
+
+- `reports/dataset_stats.json`
+- `reports/train_run_<date>/config.json`
+- `reports/train_run_<date>/metrics.json`
+- `reports/train_run_<date>/confusion_matrix.csv`
+- `checkpoints/best/<model>/0/best_model.pth.tar`
+- `MODEL_CARD.md`
+- `DATASET_CARD.md`
+
+Large raw datasets, generated reports, and checkpoints are intentionally ignored by Git. Publish datasets and models through Hugging Face or another artifact host instead of committing large binaries.
+
+## Release Checklist
+
+For a useful public release, attach these assets to GitHub Releases or Hugging Face:
+
+- `best_model.pth.tar`
+- `reports/train_run_filtered_convnext_small/config.json`
+- `reports/train_run_filtered_convnext_small/metrics.json`
+- `reports/train_run_filtered_convnext_small/eval.json`
+- `reports/train_run_filtered_convnext_small/eval/*/confusion_matrix.csv`
+
+Suggested release tag for the current baseline:
+
+```text
+convnext-small-filtered-v0.1
+```
+
+## Educational Use
+
+This repository is suitable for lessons on:
+
+- Image classification datasets and label quality.
+- Transfer learning with modern CNN/Transformer backbones.
+- Train/validation/test splits and class imbalance.
+- Reproducibility, model cards, and dataset cards.
+- Responsible open data practices for agriculture and field imagery.
+
+See `docs/EDUCATION.md` for a compact lesson path.
+
+## Project Layout
+
+```text
+config.py                    Training and path configuration
+main.py                      CLI entry point
+dataset/                     Data loading, preparation, and statistics
+libs/                        Training, evaluation, inference, validation
+models/                      Model registry and architectures
+tools/dataset_collector/     Dataset import, bundle, and export tools
+docs/                        Guides and educational material
+tests/                       Unit and smoke tests
+```
+
+## Contributing
+
+Issues and discussions are open. Useful contributions include:
+
+- New redistributable plant disease data sources with license/citation metadata.
+- Dataset quality checks and class mapping improvements.
+- Reproducible training reports on different GPUs.
+- Educational notebooks or classroom exercises.
+- Model card and dataset card improvements.
+
+Before opening a pull request, run:
+
+```powershell
+python -m compileall main.py config.py dataset libs models utils tools
+pytest
+```
+
+## License
+
+Code is released under the MIT License. Dataset licenses vary by source and are tracked in `data/sources.yaml`, bundle manifests, and dataset cards.

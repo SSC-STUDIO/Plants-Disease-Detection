@@ -1,0 +1,147 @@
+version: 1
+bundle_name: PlantDisease-Open-Bundle
+description: >
+  Source manifest for building reproducible plant-disease dataset bundles.
+  Only sources marked redistributable=true should be exported to public dataset
+  repositories. Restricted sources may still be used for local research when
+  their licenses allow it.
+sources:
+  - name: project-selfmade-train
+    url: https://github.com/SSC-STUDIO/Plants-Disease-Detection
+    license: Project-owned images; verify consent before public redistribution
+    redistributable: false
+    citation: SSC-STUDIO Plants Disease Detection project data
+    local_path: data/train
+    task: classification
+    splits:
+      train: .
+    class_mapping: directory_name
+    notes: Local training split. Keep as the target-domain evaluation anchor unless redistribution rights are confirmed.
+
+  - name: project-selfmade-val
+    url: https://github.com/SSC-STUDIO/Plants-Disease-Detection
+    license: Project-owned images; verify consent before public redistribution
+    redistributable: false
+    citation: SSC-STUDIO Plants Disease Detection project data
+    local_path: data/val
+    task: classification
+    splits:
+      val: .
+    class_mapping: directory_name
+    notes: Local validation split. Use for reproducible local evaluation.
+
+  - name: project-selfmade-test
+    url: https://github.com/SSC-STUDIO/Plants-Disease-Detection
+    license: Project-owned images; verify consent before public redistribution
+    redistributable: false
+    citation: SSC-STUDIO Plants Disease Detection project data
+    local_path: data/test
+    task: unlabeled_or_private_test
+    splits:
+      test: .
+    class_mapping: none
+    notes: Local test images. Do not publish until labels and redistribution rights are reviewed.
+
+  - name: PlantVillage-Dataset
+    url: https://huggingface.co/datasets/mohanty/PlantVillage
+    license: CC BY-SA 3.0
+    redistributable: true
+    citation: PlantVillage Dataset, Hughes and Salathe, 2015
+    local_path: ../../../Datasets/Processed/PlantVillage-Color-Classification
+    task: classification
+    splits:
+      train: train
+      test: test
+    class_mapping: labels_json_numeric_directory
+    notes: Controlled leaf images converted from the Hugging Face mirror download. Good for public pretraining and class expansion, not sufficient alone for field imagery.
+
+  - name: PlantVillage-Grayscale
+    url: https://huggingface.co/datasets/mohanty/PlantVillage
+    license: CC BY-SA 3.0
+    redistributable: true
+    citation: PlantVillage Dataset, Hughes and Salathe, 2015
+    local_path: ../../../Datasets/Processed/PlantVillage-Grayscale-Classification
+    task: classification
+    splits:
+      train: train
+      test: test
+    class_mapping: labels_json_numeric_directory
+    notes: Grayscale PlantVillage variant converted from the Hugging Face mirror. Useful for robustness and low-color-input experiments.
+
+  - name: PlantVillage-Segmented
+    url: https://huggingface.co/datasets/mohanty/PlantVillage
+    license: CC BY-SA 3.0
+    redistributable: true
+    citation: PlantVillage Dataset, Hughes and Salathe, 2015
+    local_path: ../../../Datasets/Processed/PlantVillage-Segmented-Classification
+    task: classification
+    splits:
+      train: train
+      test: test
+    class_mapping: labels_json_numeric_directory
+    notes: Segmented PlantVillage variant converted from the Hugging Face mirror. Useful for background-invariant classification experiments.
+
+  - name: PlantVillage-Robustness-Variants
+    url: https://huggingface.co/datasets/mohanty/PlantVillage
+    license: CC BY-SA 3.0 derived data; follow PlantVillage source license
+    redistributable: true
+    citation: PlantVillage Dataset, Hughes and Salathe, 2015; generated deterministic robustness variants
+    local_path: ../../../Datasets/Processed/PlantVillage-Robustness-Variants
+    task: classification_robustness
+    splits:
+      train: train
+      test: test
+    class_mapping: labels_json_numeric_directory
+    notes: Deterministic JPEG/contrast/blur/brightness robustness variants generated from the PlantVillage color split to expand training coverage and reach the 10GB corpus target.
+
+  - name: Agri-Foundation-v1
+    url: https://huggingface.co/datasets/mbsoft31/agri-foundation-v1
+    license: CC BY-SA 4.0
+    redistributable: true
+    citation: mbsoft31/agri-foundation-v1 Hugging Face dataset
+    local_path: ../../../Datasets/DataScience/Agri-Foundation-v1-HF
+    task: classification
+    splits:
+      train: data
+    class_mapping: directory_name
+    notes: Public Hugging Face agriculture/plant-disease classification source used to expand the open training corpus toward 10GB.
+
+  - name: PlantDisease-Classification-Complete
+    url: https://huggingface.co/datasets/avinashhm/plant-disease-classification-complete
+    license: "See Hugging Face dataset card"
+    redistributable: false
+    citation: avinashhm/plant-disease-classification-complete Hugging Face dataset
+    local_path: ../../../Datasets/Processed/PlantDisease-Classification-Complete
+    task: classification
+    splits:
+      train: train
+      val: val
+      test: test
+    class_mapping: labels_json_numeric_directory
+    notes: Parquet Hugging Face image dataset converted locally. Kept out of public export until redistribution license is explicitly confirmed.
+
+  - name: PlantDoc-Object-Detection-Dataset-Linux
+    url: https://github.com/pratikkayal/PlantDoc-Object-Detection-Dataset
+    license: "Public GitHub dataset; verify upstream license before redistributing derived crops"
+    redistributable: false
+    citation: "PlantDoc: A Dataset for Visual Plant Disease Detection"
+    local_path: ../../../Datasets/DataScience/PlantDoc-Object-Detection-Dataset(Linux)
+    task: detection
+    splits:
+      train: TRAIN
+      test: TEST
+    class_mapping: annotation_name
+    notes: Useful for realistic field imagery and detection/localization work. Prefer publishing conversion scripts unless license review is complete.
+
+  - name: AI-Challenger-PDR2018
+    url: https://challenger.ai/competition/pdr2018
+    license: "Challenge dataset terms; research use only unless redistribution is explicitly permitted"
+    redistributable: false
+    citation: AI Challenger 2018 Plant Disease Recognition
+    local_path: ../../../Datasets/DataScience/Plant-Disese-Dataset
+    task: classification_archive
+    splits:
+      train: ai_challenger_pdr2018_trainingset_20181023.zip
+      val: ai_challenger_pdr2018_validationset_20181023.zip
+    class_mapping: ai_challenger_numeric_id
+    notes: Keep archives local for provenance. Export only manifests and conversion scripts unless redistribution is cleared.

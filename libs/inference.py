@@ -11,6 +11,7 @@ from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
 from utils.utils import MyEncoder, build_transforms, get_image_extensions, is_image_file
 from config import config
+from libs.checkpoint_utils import infer_num_classes_from_checkpoint
 from models.model import get_net
 
 # SECURITY FIX: Import security modules for image validation and model integrity
@@ -167,6 +168,14 @@ class InferenceManager:
         
         inferred_model_name = _infer_model_name(model_path)
         model_name = model_name or self.model_name or inferred_model_name or self.config.model_name
+        checkpoint_classes = infer_num_classes_from_checkpoint(model_path)
+        if checkpoint_classes and checkpoint_classes != self.config.num_classes:
+            self.logger.info(
+                "Updating num_classes from %s to %s for inference",
+                self.config.num_classes,
+                checkpoint_classes,
+            )
+            self.config.num_classes = checkpoint_classes
             
         self.logger.info(f"Loading model from {model_path}")
         self.logger.info(f"Resolved model architecture: {model_name}")

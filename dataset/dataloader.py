@@ -67,6 +67,14 @@ def seed_everything(cfg) -> None:
     torch.manual_seed(cfg.seed)
     torch.cuda.manual_seed_all(cfg.seed)
 
+
+def dataset_base_path(cfg):
+    if getattr(cfg, "use_custom_dataset_path", False) and getattr(cfg, "dataset_path", None):
+        return cfg.dataset_path
+    if hasattr(cfg, "paths"):
+        return cfg.paths.data_dir
+    return None
+
 class PlantDiseaseDataset(Dataset):
     """植物病害图像数据集类 - 安全增强版本"""
     def __init__(
@@ -122,7 +130,7 @@ class PlantDiseaseDataset(Dataset):
             max_file_size=getattr(self.config, 'safe_max_file_size', 100 * 1024 * 1024),
             min_file_size=getattr(self.config, 'safe_min_file_size', 100)
         )
-        self.data_sanitizer = DataSanitizer(base_path=self.config.paths.data_dir if hasattr(self.config, 'paths') else None)
+        self.data_sanitizer = DataSanitizer(base_path=dataset_base_path(self.config))
         
         self.imgs = self._load_images(label_list)
         
@@ -453,7 +461,7 @@ def get_files(data_path, mode, cfg=None):
     cfg = cfg or config
     
     # SECURITY FIX: Initialize data sanitizer for path validation
-    data_sanitizer = DataSanitizer(base_path=cfg.paths.data_dir if hasattr(cfg, 'paths') else None)
+    data_sanitizer = DataSanitizer(base_path=dataset_base_path(cfg))
 
     if mode == "test":
         image_exts = get_image_extensions(cfg=cfg)
@@ -490,9 +498,9 @@ def get_files(data_path, mode, cfg=None):
             if result.is_valid and os.path.isdir(folder_path):
                 image_folders.append(result.sanitized_data)
         
-        # 获取所有jpg和png图像路径
+        # 获取所有图像路径。Windows 文件系统大小写不敏感，大小写 glob 可能匹配到同一文件两次。
         image_patterns = [f"/{pattern}" for pattern in get_image_glob_patterns(cfg=cfg)]
-        all_images = []
+        all_images = {}
         for folder in image_folders:
             for pattern in image_patterns:
                 # SECURITY FIX: Sanitize glob results
@@ -500,10 +508,11 @@ def get_files(data_path, mode, cfg=None):
                 for file_path in matched_files:
                     result = data_sanitizer.validate_file_path(file_path, must_exist=True)
                     if result.is_valid:
-                        all_images.append(result.sanitized_data)
+                        dedupe_key = os.path.normcase(os.path.abspath(result.sanitized_data))
+                        all_images.setdefault(dedupe_key, result.sanitized_data)
                     else:
                         logger.warning(f"Skipping invalid image path: {file_path}")
-        all_images.sort()
+        all_images = [all_images[key] for key in sorted(all_images)]
                 
         logger.info(f"Loading {mode} dataset ({len(all_images)} images)")
         
