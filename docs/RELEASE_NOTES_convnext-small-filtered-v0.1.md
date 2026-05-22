@@ -4,7 +4,7 @@ This release is the first public training checkpoint for the open plant disease 
 
 ## Assets
 
-Attach these files to the GitHub Release:
+The GitHub Release includes these assets:
 
 - `best_model.pth.tar`
 - `reports/train_run_filtered_convnext_small/config.json`

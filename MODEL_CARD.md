@@ -2,9 +2,9 @@
 
 ## Model Summary
 
-This model card describes the current public baseline and the recommended longer-run baseline for this repository.
+This model card describes the released public baseline and the recommended longer-run baseline for this repository.
 
-## Current Release Candidate
+## Released Baseline
 
 - Architecture: `convnext_small`
 - Framework: PyTorch + torchvision
@@ -66,7 +66,7 @@ python main.py train `
   --model convnextv2_base_384 `
   --epochs 30 `
   --batch-size 8 `
-  --dataset-path ./data `
+  --dataset-path "$env:PLANT_DATA_ROOT\PlantDisease-Open-Training-Filtered" `
   --seed 888 `
   --force-train `
   --no-wandb
@@ -95,7 +95,7 @@ Record top-1 accuracy, top-k accuracy, loss, dataset version, source manifest ha
 - Performance can drop on field images if training is dominated by controlled leaf images.
 - Predictions should be treated as educational or decision-support signals, not definitive diagnosis.
 - The model may inherit label noise and class imbalance from source datasets.
-- The current release candidate was trained for only 3 epochs as a fast public baseline; it is not a final agricultural deployment model.
+- The released baseline was trained for only 3 epochs as a fast public baseline; it is not a final agricultural deployment model.
 
 ## Responsible Use
 

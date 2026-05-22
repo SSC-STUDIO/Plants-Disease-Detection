@@ -1,0 +1,7 @@
+huggingface_hub>=0.23.0
+pyarrow>=16.0.0
+selenium>=4.1.0
+webdriver-manager>=3.5.0
+beautifulsoup4>=4.10.0
+flickrapi>=2.4.0
+PyQt6>=6.4.0

@@ -16,10 +16,16 @@ For a complete written assignment scaffold, see `docs/PAPER_PROJECT.md`.
 
 ## Classroom Commands
 
+Set a local data root after rebuilding the filtered training layout from `DATASET_CARD.md`:
+
 ```powershell
-python main.py stats --data ./data/train --output reports/dataset_stats.json
-python main.py train --model convnextv2_base_384 --epochs 1 --batch-size 8 --dataset-path ./data --seed 888 --force-train --no-wandb --max-train-batches 2 --max-val-batches 1
-python main.py evaluate --model checkpoints/best/convnextv2_base_384/0/best_model.pth.tar --output reports/eval.json
+$env:PLANT_DATA_ROOT = "$PWD\.datasets"
+```
+
+```powershell
+python main.py stats --data "$env:PLANT_DATA_ROOT\PlantDisease-Open-Training-Filtered\train" --output reports/dataset_stats.json
+python main.py train --model convnext_small --epochs 1 --batch-size 8 --dataset-path "$env:PLANT_DATA_ROOT\PlantDisease-Open-Training-Filtered" --seed 888 --force-train --no-wandb --no-prepare --no-image-validation --max-train-batches 20 --max-val-batches 5
+python main.py evaluate --model checkpoints/best/convnext_small/0/best_model.pth.tar --model-name convnext_small --data "$env:PLANT_DATA_ROOT\PlantDisease-Open-Training-Filtered\val" --output reports/eval.json
 python app.py --download
 ```
 

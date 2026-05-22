@@ -10,7 +10,7 @@ This repository now includes code, dataset tooling, training logs, a local Web D
 | --- | --- | ---: | ---: | ---: | ---: | --- |
 | `convnext_small` | filtered open training layout | 117 | 7,307 | 95.4564% | 98.0703% | GitHub Release asset |
 
-Artifacts from the reproducible local run are stored under `reports/train_run_filtered_convnext_small/`:
+The checkpoint and run artifacts are published as GitHub Release assets for `convnext-small-filtered-v0.1`. When you reproduce the run locally, the same files are generated under `reports/train_run_filtered_convnext_small/`:
 
 - `config.json`
 - `metrics.json`
@@ -38,14 +38,16 @@ python app.py --download
 - Web Demo: `python app.py --download`
 - Model details: `MODEL_CARD.md`
 - Dataset details: `DATASET_CARD.md`
+- Stronger-backbone training: `docs/MODERN_BACKBONE_TRAINING.md`
 - Course guide: `docs/EDUCATION.md`
 - Paper/course template: `docs/PAPER_PROJECT.md`
+- Security examples: `docs/security_examples/`
 - Contributing: `CONTRIBUTING.md`
 - Citation: `CITATION.cff`
 
-## Current Baseline Plan
+## Next Baseline Plan
 
-The recommended local baseline is designed for an 8 GB GPU such as an RTX 4060 Laptop GPU:
+The released baseline is `convnext_small`. The recommended next local experiment is designed for an 8 GB GPU such as an RTX 4060 Laptop GPU:
 
 - Model: `convnextv2_base_384`
 - Image size: `384 x 384`
@@ -62,7 +64,8 @@ The recommended local baseline is designed for an 8 GB GPU such as an RTX 4060 L
 ```powershell
 git clone https://github.com/SSC-STUDIO/Plants-Disease-Detection.git
 cd Plants-Disease-Detection
-python -m pip install -r requirements.txt
+python -m pip install -r requirements-core.txt
+python -m pip install -r requirements-demo.txt
 ```
 
 Check the environment and available commands:
@@ -80,7 +83,15 @@ python app.py --download
 
 Then open `http://127.0.0.1:7860`. The command downloads both the release checkpoint and the label mapping when they are missing.
 
-If Hugging Face downloads are slow or blocked, use a mirror before training:
+For training, first prepare a local numeric dataset with this layout:
+
+```text
+<dataset-root>/
+  train/<label-id>/*.jpg
+  val/<label-id>/*.jpg
+```
+
+The dataset rebuild commands below use `.datasets` by default. If Hugging Face downloads are slow or blocked, use a mirror before downloading sources:
 
 ```powershell
 $env:HF_ENDPOINT = "https://hf-mirror.com"
@@ -90,17 +101,19 @@ $env:PLANT_DATA_ROOT = "$PWD\.datasets"
 Summarize the current training split:
 
 ```powershell
-python main.py stats --data ./data/train --output reports/dataset_stats.json
+python main.py stats `
+  --data "$env:PLANT_DATA_ROOT\PlantDisease-Open-Training-Filtered\train" `
+  --output reports/dataset_stats.json
 ```
 
-Run the reproducible baseline:
+Run the next reproducible baseline after the local dataset exists:
 
 ```powershell
 python main.py train `
   --model convnextv2_base_384 `
   --epochs 30 `
   --batch-size 8 `
-  --dataset-path ./data `
+  --dataset-path "$env:PLANT_DATA_ROOT\PlantDisease-Open-Training-Filtered" `
   --seed 888 `
   --force-train `
   --no-wandb
@@ -114,7 +127,7 @@ python main.py train `
   --model convnextv2_base_384 `
   --epochs 1 `
   --batch-size 8 `
-  --dataset-path ./data `
+  --dataset-path "$env:PLANT_DATA_ROOT\PlantDisease-Open-Training-Filtered" `
   --seed 888 `
   --force-train `
   --no-wandb `
@@ -129,14 +142,16 @@ Evaluate a trained checkpoint:
 ```powershell
 python main.py evaluate `
   --model checkpoints/best/convnextv2_base_384/0/best_model.pth.tar `
+  --model-name convnextv2_base_384 `
+  --data "$env:PLANT_DATA_ROOT\PlantDisease-Open-Training-Filtered\val" `
   --output reports/eval.json
 ```
 
-Run prediction with test-time augmentation:
+Run prediction with test-time augmentation after a test image directory exists:
 
 ```powershell
 python main.py predict `
-  --input ./data/test/images `
+  --input "$env:PLANT_DATA_ROOT\PlantDisease-Open-Training-Filtered\val" `
   --tta-views 4 `
   --output ./submit/prediction_full.json `
   --output-format full `
@@ -299,7 +314,7 @@ Large raw datasets, generated reports, and checkpoints are intentionally ignored
 
 ## Release Checklist
 
-For a useful public release, attach these assets to GitHub Releases or Hugging Face:
+For a useful public release, publish these assets to GitHub Releases or Hugging Face:
 
 - `best_model.pth.tar`
 - `reports/train_run_filtered_convnext_small/config.json`

@@ -29,6 +29,8 @@ Do not commit raw datasets, private data, unclear-license images, or generated c
 Before opening a pull request:
 
 ```powershell
+python -m pip install -r requirements-core.txt
+python -m pip install -r requirements-dev.txt
 python -m compileall app.py main.py config.py dataset libs models utils tools tests
 python -m pytest -q
 ```

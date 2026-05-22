@@ -3,6 +3,7 @@
 
 import argparse
 import json
+import os
 import platform
 import subprocess
 import sys
@@ -17,11 +18,20 @@ from config import config
 from dataset.stats import summarize_dataset
 
 
+def default_dataset_root() -> str:
+    root = os.environ.get("PLANT_DATA_ROOT")
+    if root:
+        return str(Path(root) / "PlantDisease-Open-Training-Filtered")
+    return str(Path(".datasets") / "PlantDisease-Open-Training-Filtered")
+
+
 def parse_args():
+    dataset_root = default_dataset_root()
     parser = argparse.ArgumentParser(description="Create a reproducible training run artifact folder")
     parser.add_argument("--output-dir", type=Path, default=None, help="Run artifact directory")
-    parser.add_argument("--train-data", default="./data/train", help="Training data path for stats")
-    parser.add_argument("--val-data", default="./data/val", help="Validation data path for stats")
+    parser.add_argument("--dataset-path", default=dataset_root, help="Numeric dataset root with train/ and val/")
+    parser.add_argument("--train-data", default=None, help="Training data path for stats")
+    parser.add_argument("--val-data", default=None, help="Validation data path for stats")
     parser.add_argument("--model", default="convnextv2_base_384", help="Model name")
     parser.add_argument("--epochs", type=int, default=30, help="Planned epochs")
     parser.add_argument("--batch-size", type=int, default=8, help="Planned batch size")
@@ -57,6 +67,9 @@ def git_revision() -> str:
 
 def main():
     args = parse_args()
+    dataset_path = Path(args.dataset_path)
+    train_data = args.train_data or str(dataset_path / "train")
+    val_data = args.val_data or str(dataset_path / "val")
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_dir = args.output_dir or Path("reports") / f"train_run_{run_id}"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -66,7 +79,7 @@ def main():
         "--model", args.model,
         "--epochs", str(args.epochs),
         "--batch-size", str(args.batch_size),
-        "--dataset-path", "./data",
+        "--dataset-path", str(dataset_path),
         "--seed", str(args.seed),
         "--force-train",
         "--no-wandb",
@@ -81,14 +94,15 @@ def main():
         "planned_epochs": args.epochs,
         "planned_batch_size": args.batch_size,
         "planned_seed": args.seed,
+        "dataset_path": str(dataset_path),
         "train_command": train_command,
         "config": make_jsonable(config),
     }
 
     write_json(output_dir / "config.json", run_config)
-    write_json(output_dir / "train_stats.json", summarize_dataset(args.train_data, cfg=config))
-    if Path(args.val_data).exists():
-        write_json(output_dir / "val_stats.json", summarize_dataset(args.val_data, cfg=config))
+    write_json(output_dir / "train_stats.json", summarize_dataset(train_data, cfg=config))
+    if Path(val_data).exists():
+        write_json(output_dir / "val_stats.json", summarize_dataset(val_data, cfg=config))
     write_json(
         output_dir / "metrics.json",
         {

@@ -7,7 +7,8 @@ This guide is for a fresh clone that wants to run the released demo or reproduce
 ```powershell
 git clone https://github.com/SSC-STUDIO/Plants-Disease-Detection.git
 cd Plants-Disease-Detection
-python -m pip install -r requirements.txt
+python -m pip install -r requirements-core.txt
+python -m pip install -r requirements-demo.txt
 ```
 
 ## 2. Run the Web Demo
@@ -63,7 +64,7 @@ python main.py train `
   --model convnext_small `
   --epochs 1 `
   --batch-size 8 `
-  --dataset-path .datasets/PlantDisease-Open-Training-Filtered `
+  --dataset-path "$env:PLANT_DATA_ROOT\PlantDisease-Open-Training-Filtered" `
   --seed 888 `
   --force-train `
   --no-wandb `

@@ -5,7 +5,7 @@
 
 ## Tech Stack
 - Language: Python
-- Dependencies: requirements.txt, pyproject.toml
+- Dependencies: requirements-core.txt, requirements-demo.txt, requirements-collector.txt, requirements-server.txt, requirements-extras.txt, pyproject.toml
 - Entry point: main.py
 - Config: config.py
 

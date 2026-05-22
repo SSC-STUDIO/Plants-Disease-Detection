@@ -6,7 +6,7 @@ on:
   pull_request:
     branches: [ main, master, develop ]
   schedule:
-    # 每周一凌晨 2 点运行
+    # Weekly dependency audit.
     - cron: '0 2 * * 1'
 
 jobs:
@@ -29,9 +29,14 @@ jobs:
         python -m pip install --upgrade pip
         pip install pip-audit
 
-    - name: Run pip-audit on requirements.txt
+    - name: Run pip-audit on root requirements
       run: |
-        pip-audit --desc --requirement requirements.txt || true
+        for req in requirements-core.txt requirements-demo.txt requirements-collector.txt requirements-server.txt requirements-extras.txt; do
+          if [ -f "$req" ]; then
+            echo "Auditing $req..."
+            pip-audit --desc --requirement "$req" || true
+          fi
+        done
 
     - name: Run pip-audit on tools
       run: |
@@ -44,7 +49,7 @@ jobs:
 
     - name: Check for known vulnerabilities
       run: |
-        pip-audit --desc --requirement requirements.txt --format=json --output=audit-report.json || true
+        pip-audit --desc --requirement requirements-core.txt --format=json --output=audit-report.json || true
         if [ -f audit-report.json ]; then
           cat audit-report.json
         fi

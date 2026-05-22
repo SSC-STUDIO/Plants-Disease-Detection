@@ -1,124 +1,79 @@
 #!/usr/bin/env python
-# -*- coding: utf-8 -*-
-"""
-远程服务器训练脚本 - ConvNeXt V2 Base 384
-自动完成数据准备、模型训练和推理
+"""Portable helper for running a remote or headless training job.
+
+The script does not know any hostnames or local machine paths. Run it after
+copying the repository and dataset onto the target machine.
 """
 
-import os
-import sys
-import subprocess
+from __future__ import annotations
+
 import argparse
+import os
+import subprocess
+import sys
+from pathlib import Path
 
-def main():
-    parser = argparse.ArgumentParser(description="Plants Disease Detection - Remote Training")
-    parser.add_argument('--skip-data-prep', action='store_true',
-                        help='Skip data preparation (if already done)')
-    parser.add_argument('--epochs', type=int, default=50,
-                        help='Number of training epochs')
-    parser.add_argument('--batch-size', type=int, default=8,
-                        help='Batch size for training (default: 8 for 384x384 input)')
-    parser.add_argument('--model', type=str, default='convnextv2_base_384',
-                        choices=['convnextv2_base_384', 'eva02_large', 'efficientnetv2_s'],
-                        help='Model architecture (default: convnextv2_base_384)')
-    parser.add_argument('--offline', action='store_true',
-                        help='Offline mode - disable pretrained weight download')
-    parser.add_argument('--force-train', action='store_true',
-                        help='Force training from scratch, ignoring checkpoints')
+
+def default_dataset_path() -> str:
+    root = os.environ.get("PLANT_DATA_ROOT")
+    if root:
+        return str(Path(root) / "PlantDisease-Open-Training-Filtered")
+    return str(Path(".datasets") / "PlantDisease-Open-Training-Filtered")
+
+
+def run_command(command, env) -> int:
+    print("+ " + " ".join(str(part) for part in command))
+    return subprocess.run(command, cwd=Path.cwd(), env=env).returncode
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Run a portable plant disease training pipeline")
+    parser.add_argument("--dataset-path", default=default_dataset_path(), help="Numeric dataset root with train/ and val/")
+    parser.add_argument("--epochs", type=int, default=30, help="Number of training epochs")
+    parser.add_argument("--batch-size", type=int, default=8, help="Training batch size")
+    parser.add_argument("--model", default="convnextv2_base_384", help="Model architecture")
+    parser.add_argument("--seed", type=int, default=888, help="Random seed")
+    parser.add_argument("--offline", action="store_true", help="Disable online model/download lookups where supported")
+    parser.add_argument("--force-train", action="store_true", help="Ignore existing checkpoints")
+    parser.add_argument("--no-prepare", action="store_true", help="Skip dataset preparation in main.py")
+    parser.add_argument("--no-image-validation", action="store_true", help="Skip startup image validation")
     args = parser.parse_args()
 
-    print("=" * 60)
-    print("Plants Disease Detection - Remote Training Pipeline")
-    print("=" * 60)
-    print(f"Model: {args.model}")
-    print(f"Epochs: {args.epochs}")
-    print(f"Batch size: {args.batch_size}")
-    print(f"Offline mode: {args.offline}")
-    print("=" * 60)
+    dataset_path = Path(args.dataset_path)
+    if not (dataset_path / "train").exists():
+        print(f"ERROR: training split not found: {dataset_path / 'train'}")
+        return 1
 
-    # 设置环境变量
     env = os.environ.copy()
     if args.offline:
-        env['HF_HUB_OFFLINE'] = '1'
-        env['TRANSFORMERS_OFFLINE'] = '1'
-        print("\nOffline mode enabled - using local weights or random init")
+        env["HF_HUB_OFFLINE"] = "1"
+        env["TRANSFORMERS_OFFLINE"] = "1"
 
-    # Step 1: 数据准备
-    if not args.skip_data_prep:
-        print("\n[Step 1/3] Data Preparation")
-        print("Preparing training and validation datasets...")
-
-        cmd = [
-            sys.executable,
-            "main.py",
-            "prepare",
-            "--all",
-            "--merge-augmented",
-            "--cleanup"
-        ]
-
-        result = subprocess.run(cmd, cwd=os.getcwd(), env=env)
-        if result.returncode != 0:
-            print("ERROR: Data preparation failed!")
-            return 1
-
-        print("✓ Data preparation completed successfully")
-    else:
-        print("\n[Step 1/3] Data Preparation - SKIPPED")
-
-    # Step 2: 模型训练
-    print("\n[Step 2/3] Model Training")
-    print(f"Training {args.model} model for {args.epochs} epochs...")
-
-    cmd = [
+    command = [
         sys.executable,
         "main.py",
         "train",
-        "--epochs", str(args.epochs),
-        "--batch-size", str(args.batch_size),
-        "--model", args.model,
-        "--wandb",
-        "--wandb-project", f"plants-disease-detection-{args.model}",
-        "--cleanup"
+        "--model",
+        args.model,
+        "--epochs",
+        str(args.epochs),
+        "--batch-size",
+        str(args.batch_size),
+        "--dataset-path",
+        str(dataset_path),
+        "--seed",
+        str(args.seed),
+        "--no-wandb",
     ]
-
     if args.force_train:
-        cmd.append("--force-train")
+        command.append("--force-train")
+    if args.no_prepare:
+        command.append("--no-prepare")
+    if args.no_image_validation:
+        command.append("--no-image-validation")
 
-    result = subprocess.run(cmd, cwd=os.getcwd(), env=env)
-    if result.returncode != 0:
-        print("ERROR: Training failed!")
-        return 1
+    return run_command(command, env)
 
-    print("✓ Training completed successfully")
-
-    # Step 3: 模型推理
-    print("\n[Step 3/3] Model Inference")
-    print("Running inference on test dataset...")
-
-    cmd = [
-        sys.executable,
-        "main.py",
-        "predict",
-        "--model-name", args.model,
-        "--output-format", "submit",
-        "--topk", "3"
-    ]
-
-    result = subprocess.run(cmd, cwd=os.getcwd(), env=env)
-    if result.returncode != 0:
-        print("ERROR: Inference failed!")
-        return 1
-
-    print("✓ Inference completed successfully")
-
-    print("\n" + "=" * 60)
-    print("All steps completed successfully!")
-    print(f"Model weights saved in: checkpoints/best/{args.model}/")
-    print("Predictions saved in: submit/prediction.json")
-    print("=" * 60)
-
-    return 0
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())
