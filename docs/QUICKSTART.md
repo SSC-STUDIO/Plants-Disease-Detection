@@ -21,7 +21,19 @@ python app.py --download
 
 Open `http://127.0.0.1:7860`.
 
-## 3. Evaluate the Released Model
+## 3. Run the Python Inference Client
+
+For scriptable inference on your own images:
+
+```powershell
+python clients/python/infer.py `
+  --input path\to\leaf.jpg `
+  --download `
+  --topk 5 `
+  --output reports/client_prediction.json
+```
+
+## 4. Evaluate the Released Model
 
 Prepare a numeric validation directory such as:
 
@@ -46,7 +58,7 @@ python main.py evaluate `
   --output reports/eval_released.json
 ```
 
-## 4. Rebuild the Dataset
+## 5. Rebuild the Dataset
 
 Use `DATASET_CARD.md` for full commands. The short pattern is:
 
@@ -57,7 +69,7 @@ $env:PLANT_DATA_ROOT = "$PWD\.datasets"
 
 Then download sources, build the bundle, export a Hugging Face-ready folder, filter quality, and export the numeric training layout.
 
-## 5. Run a Small Training Job
+## 6. Run a Small Training Job
 
 ```powershell
 python main.py train `
@@ -74,7 +86,7 @@ python main.py train `
   --max-val-batches 5
 ```
 
-## 6. Report Results
+## 7. Report Results
 
 For a course or paper project, include:
 

@@ -7,6 +7,7 @@ Open plant disease image-classification toolkit built with PyTorch. The project 
 | Goal | Start here |
 | --- | --- |
 | Run the local Web Demo | `python app.py --download` |
+| Run scriptable inference | [clients/python/README.md](clients/python/README.md) |
 | Download the released model | [ConvNeXt Small filtered baseline v0.1](https://github.com/SSC-STUDIO/Plants-Disease-Detection/releases/tag/convnext-small-filtered-v0.1) |
 | Reproduce a small run | [docs/QUICKSTART.md](docs/QUICKSTART.md) |
 | Rebuild or publish a dataset | [DATASET_CARD.md](DATASET_CARD.md) |
@@ -58,6 +59,7 @@ python app.py --download
 
 - Fast setup: `docs/QUICKSTART.md`
 - Web Demo: `python app.py --download`
+- Python inference client: `clients/python/infer.py --download --input <image-or-folder>`
 - Model details: `MODEL_CARD.md`
 - Dataset details: `DATASET_CARD.md`
 - Stronger-backbone training: `docs/MODERN_BACKBONE_TRAINING.md`
@@ -104,6 +106,16 @@ python app.py --download
 ```
 
 Then open `http://127.0.0.1:7860`.
+
+Run scriptable local inference:
+
+```powershell
+python clients/python/infer.py `
+  --input path\to\leaf.jpg `
+  --download `
+  --topk 5 `
+  --output reports/client_prediction.json
+```
 
 For training, first prepare a local numeric dataset with this layout:
 
