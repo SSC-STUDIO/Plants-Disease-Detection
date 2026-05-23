@@ -2,6 +2,28 @@
 
 Open plant disease image-classification toolkit built with PyTorch. The project focuses on reproducible training, clear dataset provenance, and education-friendly workflows for learning applied computer vision in agriculture.
 
+## Try It First
+
+| Goal | Start here |
+| --- | --- |
+| Run the local Web Demo | `python app.py --download` |
+| Download the released model | [ConvNeXt Small filtered baseline v0.1](https://github.com/SSC-STUDIO/Plants-Disease-Detection/releases/tag/convnext-small-filtered-v0.1) |
+| Reproduce a small run | [docs/QUICKSTART.md](docs/QUICKSTART.md) |
+| Rebuild or publish a dataset | [DATASET_CARD.md](DATASET_CARD.md) |
+| Use in a course or paper | [docs/EDUCATION.md](docs/EDUCATION.md), [docs/PAPER_PROJECT.md](docs/PAPER_PROJECT.md) |
+
+Quick demo setup:
+
+```powershell
+git clone https://github.com/SSC-STUDIO/Plants-Disease-Detection.git
+cd Plants-Disease-Detection
+python -m pip install -r requirements-core.txt
+python -m pip install -r requirements-demo.txt
+python app.py --download
+```
+
+Then open `http://127.0.0.1:7860`. The demo downloads the released checkpoint and label mapping when they are missing.
+
 ## Current Public Baseline
 
 This repository now includes code, dataset tooling, training logs, a local Web Demo, and release-ready model documentation.
@@ -59,7 +81,7 @@ The released baseline is `convnext_small`. The recommended next local experiment
 - Seed: `888`
 - Experiment tracking: local files by default, W&B disabled
 
-## Quick Start
+## Install
 
 ```powershell
 git clone https://github.com/SSC-STUDIO/Plants-Disease-Detection.git
@@ -81,7 +103,7 @@ Run the Web Demo with a local or release checkpoint:
 python app.py --download
 ```
 
-Then open `http://127.0.0.1:7860`. The command downloads both the release checkpoint and the label mapping when they are missing.
+Then open `http://127.0.0.1:7860`.
 
 For training, first prepare a local numeric dataset with this layout:
 

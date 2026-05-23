@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Released baseline checkpoint
+    url: https://github.com/SSC-STUDIO/Plants-Disease-Detection/releases/tag/convnext-small-filtered-v0.1
+    about: Download the current public model checkpoint and evaluation artifacts.
