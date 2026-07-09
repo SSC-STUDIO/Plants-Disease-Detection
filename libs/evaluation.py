@@ -217,16 +217,25 @@ def evaluate_model(
     all_targets: List[int] = []
     all_preds: List[int] = []
 
+    # When TTA is enabled, _predict_probabilities returns softmax(p_avg) already.
+    # Feed the model's raw logits — NOT log(probabilities) — to the criterion,
+    # because every loss function (FocalLoss, ImprovedFocalLoss,
+    # LabelSmoothingCrossEntropy, nn.CrossEntropyLoss) applies its OWN
+    # log-softmax internally.  Passing log(softmax(x)) would double-apply it
+    # and produce meaningless loss values, silently degrading eval reports.
     with torch.no_grad():
         for inputs, targets in eval_loader:
             inputs = inputs.to(eval_device)
             targets_tensor = torch.tensor(targets).to(eval_device)
 
+            # Probabilities used for accuracy / prediction (supports TTA).
             probabilities = tta_helper._predict_probabilities(inputs, tta_views=tta_views)
-            outputs = torch.log(probabilities.clamp_min(1e-8))
-            loss = criterion(outputs, targets_tensor)
 
-            prec1, preck = accuracy(outputs, targets_tensor, topk=(1, max(1, topk)))
+            # Raw logits used for loss (no TTA — consistent with training).
+            logits = model(inputs)
+            loss = criterion(logits, targets_tensor)
+
+            prec1, preck = accuracy(logits, targets_tensor, topk=(1, max(1, topk)))
             loss_meter.update(loss.item(), inputs.size(0))
             top1_meter.update(prec1.item(), inputs.size(0))
             topk_meter.update(preck.item(), inputs.size(0))
