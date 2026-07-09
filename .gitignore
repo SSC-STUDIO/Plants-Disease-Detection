@@ -62,6 +62,9 @@ task_plan.md
 findings.md
 progress.md
 
+# Development scratch scripts (use tests/ for real tests)
+/test_model.py
+
 # Large files and datasets
 *.zip
 *.rar
