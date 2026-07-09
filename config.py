@@ -246,6 +246,13 @@ class DefaultConfigs:
     max_train_batches: Optional[int] = None  # 调试/CI用：每个epoch最多训练多少个batch，None表示不限制
     max_val_batches: Optional[int] = None  # 调试/CI用：每个epoch最多验证多少个batch，None表示不限制
 
+    # 标签索引重映射规则 Label Remapping Configuration
+    # 推理阶段的 _remap_label_index 根据 (threshold, offset) 对原始预测标签进行偏移调整。
+    # 适用于原始数据集标签编号存在跳号（如 AI Challenger 2018 PDR 在标签 43 后有 2 个空位）的场景。
+    # 每条规则: 若 pred_label > threshold，则 pred_label += offset。
+    # 越靠前的规则优先匹配，匹配后不再应用后续规则。
+    label_remap_ranges: List[List[int]] = field(default_factory=lambda: [[43, 2]])
+
     def __post_init__(self):
         """初始化后的验证和设置"""
         # 初始化依赖于paths的字段

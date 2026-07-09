@@ -332,7 +332,7 @@ class InferenceManager:
                 # Process predictions
                 for i, (probs, path) in enumerate(zip(probabilities, batch_paths)):
                     pred_index = int(torch.argmax(probs).item())
-                    pred_label = self._remap_label_index(pred_index)
+                    pred_label = self._remap_label_index(pred_index, cfg=self.config)
                     confidence = float(torch.max(probs).item())
 
                     # Create result entry
@@ -346,7 +346,7 @@ class InferenceManager:
                         topk_items = []
                         for score, idx in zip(topk_scores[i], topk_indices[i]):
                             topk_items.append({
-                                "class": self._remap_label_index(int(idx.item())),
+                                "class": self._remap_label_index(int(idx.item()), cfg=self.config),
                                 "score": float(score.item()),
                             })
                         result["topk"] = topk_items
@@ -405,9 +405,25 @@ class InferenceManager:
             raise
 
     @staticmethod
-    def _remap_label_index(pred_label: int) -> int:
-        if pred_label > 43:
-            return pred_label + 2
+    def _remap_label_index(pred_label: int, cfg=None) -> int:
+        """根据配置的标签重映射规则调整预测标签索引。
+
+        适用于原始数据集标签编号存在跳号的场景（如 AI Challenger 2018 PDR
+        在标签 43 后有 2 个空位，需将 >43 的标签 +2）。
+
+        Args:
+            pred_label: 原始预测标签索引
+            cfg: 配置对象（默认为 config）
+
+        Returns:
+            调整后的标签索引
+        """
+        if cfg is None:
+            from config import config as cfg
+        remap_ranges = getattr(cfg, 'label_remap_ranges', [])
+        for threshold, offset in remap_ranges:
+            if pred_label > threshold:
+                return pred_label + offset
         return pred_label
 
 class InferenceDataset(Dataset):
@@ -559,7 +575,7 @@ def predict(
             topk_indices = np.argsort(pred)[::-1][:topk_safe]
             topk_items = [
                 {
-                    "class": inference._remap_label_index(int(idx)),
+                    "class": inference._remap_label_index(int(idx), cfg=inference.config),
                     "score": float(pred[idx]),
                 }
                 for idx in topk_indices
@@ -567,7 +583,7 @@ def predict(
 
             result = {
                 'image_id': os.path.basename(input_path),
-                'disease_class': inference._remap_label_index(int(np.argmax(pred))),
+                'disease_class': inference._remap_label_index(int(np.argmax(pred)), cfg=inference.config),
                 'confidence': float(np.max(pred)),
                 'topk': topk_items,
             }
