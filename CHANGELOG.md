@@ -9,6 +9,7 @@
 ### Fixed
 - 继续训练时 LR scheduler 不再从初始学习率重新开始——余弦退火/OneCycle 调度中断后恢复，继续按原本计划走完剩余周期
 - 继续训练时 EMA 累积权重不再丢失——恢复训练时保持 EMA 权重的连续性，避免前几轮退化
+- **修复 `MemoryTracker` GPU 内存计算错误**：原先用 `max_memory_allocated()`（历史峰值）作分母，导致 `current_usage` 是对历史峰值的比例而非 GPU 总容量的比例。现改为 `get_device_properties(0).total_memory`，`should_warn()` 的 90% 阈值现在真正基于总显存判断。
 
 ## [0.2.0] - 2026-03-23
 

@@ -895,17 +895,25 @@ class MemoryTracker:
         self.peak_usage = 0
         
     def update(self) -> None:
-        """更新内存使用统计"""
+        """更新内存使用统计
+
+        Uses ``get_device_properties().total_memory`` as the denominator so
+        that ``current_usage`` is a true fraction of GPU capacity.  The
+        previous implementation divided ``memory_allocated()`` by
+        ``max_memory_allocated()`` — the *historical peak* — which produced a
+        ratio that bore no relation to total memory and caused both false
+        positives and false negatives on the warning threshold.
+        """
         if not self.track_cuda or not torch.cuda.is_available():
             self.current_usage = 0
             return
 
-        max_allocated = torch.cuda.max_memory_allocated()
-        if max_allocated <= 0:
+        total_memory = torch.cuda.get_device_properties(0).total_memory
+        if total_memory <= 0:
             self.current_usage = 0
             return
 
-        current = torch.cuda.memory_allocated() / max_allocated
+        current = torch.cuda.memory_allocated() / total_memory
         self.peak_usage = max(self.peak_usage, current)
         self.current_usage = current
         

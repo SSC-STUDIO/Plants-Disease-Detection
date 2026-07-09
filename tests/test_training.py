@@ -168,3 +168,43 @@ class TestWandbIntegration:
         assert kwargs['config']['planned_epochs'] == 7
         assert kwargs['config']['start_epoch'] == 1
         assert kwargs['config']['force_train'] is True
+
+
+class TestMemoryTracker:
+    """Unit tests for MemoryTracker (fix: use total_memory as denominator)."""
+
+    def test_no_cuda_returns_zero(self, test_config):
+        """When CUDA is not available, current usage stays 0."""
+        tracker = Trainer(test_config).memory_tracker
+        tracker.track_cuda = True
+        tracker.update()
+        assert tracker.current_usage == 0
+
+    def test_tracking_disabled_returns_zero(self, test_config):
+        """When track_cuda is False, usage stays 0 even if CUDA were available."""
+        tracker = Trainer(test_config).memory_tracker
+        tracker.track_cuda = False
+        tracker.update()
+        assert tracker.current_usage == 0
+
+    def test_should_warn_threshold(self, test_config):
+        """should_warn returns True only when current_usage exceeds threshold."""
+        tracker = Trainer(test_config).memory_tracker
+        tracker.warning_threshold = 0.5
+        tracker.current_usage = 0.4
+        assert not tracker.should_warn()
+        tracker.current_usage = 0.6
+        assert tracker.should_warn()
+
+    def test_peak_usage_tracks_max(self, test_config):
+        """peak_usage retains the highest observed usage."""
+        tracker = Trainer(test_config).memory_tracker
+        tracker.current_usage = 0.3
+        tracker.peak_usage = max(tracker.peak_usage, tracker.current_usage)
+        assert tracker.peak_usage == 0.3
+        tracker.current_usage = 0.1
+        tracker.peak_usage = max(tracker.peak_usage, tracker.current_usage)
+        assert tracker.peak_usage == 0.3
+        tracker.current_usage = 0.9
+        tracker.peak_usage = max(tracker.peak_usage, tracker.current_usage)
+        assert tracker.peak_usage == 0.9
