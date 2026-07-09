@@ -145,10 +145,27 @@ def health_check():
     disk_free = None
     disk_total = None
     try:
-        stat = os.statvfs(MODEL_DIR)
-        disk_free = stat.f_bavail * stat.f_frsize
-        disk_total = stat.f_blocks * stat.f_frsize
-    except OSError:
+        if hasattr(os, "statvfs"):
+            # Unix: use statvfs for filesystem statistics
+            stat = os.statvfs(MODEL_DIR)
+            disk_free = stat.f_bavail * stat.f_frsize
+            disk_total = stat.f_blocks * stat.f_frsize
+        else:
+            # Windows: use ctypes to call GetDiskFreeSpaceExW
+            import ctypes
+            free_bytes = ctypes.c_ulonglong(0)
+            total_bytes = ctypes.c_ulonglong(0)
+            available = ctypes.c_ulonglong(0)
+            drive = str(MODEL_DIR.resolve().anchor)  # e.g. "C:\\"
+            if ctypes.windll.kernel32.GetDiskFreeSpaceExW(
+                ctypes.c_wchar_p(drive),
+                ctypes.pointer(available),
+                ctypes.pointer(total_bytes),
+                ctypes.pointer(free_bytes),
+            ):
+                disk_free = free_bytes.value
+                disk_total = total_bytes.value
+    except (OSError, AttributeError):
         pass
 
     uptime = time.monotonic() - _start_time

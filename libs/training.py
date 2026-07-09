@@ -614,7 +614,7 @@ class Trainer:
         checkpoint_path = os.path.join(self.config.weights, self.config.model_name, "0", "_latest_model.pth.tar")
         best_model_path = os.path.join(self.config.best_weights, self.config.model_name, "0", "best_model.pth.tar")
         
-        start_epoch, best_acc, model_path = load_training_state(
+        start_epoch, best_acc, model_path, loaded_checkpoint = load_training_state(
             checkpoint_path, best_model_path, self.device, epochs, force_train, self.logger
         )
         
@@ -629,7 +629,8 @@ class Trainer:
         
         # 加载权重（如果是继续训练）
         if start_epoch > 0 and model_path:
-            load_model_weights(model, model_path, self.device, self.logger)
+            load_model_weights(model, model_path, self.device, self.logger,
+                               checkpoint=loaded_checkpoint)
         
         # 验证CUDA
         if torch.cuda.is_available():
@@ -647,7 +648,8 @@ class Trainer:
         
         # 恢复优化器状态
         if start_epoch > 0:
-            setup_optimizer_state(optimizer, start_epoch, model_path, self.device, self.logger)
+            setup_optimizer_state(optimizer, start_epoch, model_path, self.device, self.logger,
+                                  checkpoint=loaded_checkpoint)
         
         # 设置学习率调度器
         scheduler = get_scheduler(optimizer, epochs, len(train_loader), cfg=self.config)
@@ -664,8 +666,10 @@ class Trainer:
 
         # 恢复scheduler和EMA状态（仅在继续训练时）
         if start_epoch > 0:
-            restore_scheduler_state(scheduler, start_epoch, model_path, self.device, self.logger)
-            restore_ema_state(model_ema, model_path, self.device, self.logger)
+            restore_scheduler_state(scheduler, start_epoch, model_path, self.device, self.logger,
+                                    checkpoint=loaded_checkpoint)
+            restore_ema_state(model_ema, model_path, self.device, self.logger,
+                             checkpoint=loaded_checkpoint)
 
         self._init_wandb(epochs=epochs, start_epoch=start_epoch, force_train=force_train)
 
