@@ -9,6 +9,7 @@ import time
 import glob
 import json
 import platform
+import traceback
 from dataclasses import asdict
 from typing import Dict, Any, List, Optional, Tuple
 
@@ -933,40 +934,45 @@ def run_inference(args, cfg=None) -> None:
     # 检查输入是文件还是目录
     model_name = getattr(args, 'model_name', None)
 
-    if os.path.isfile(input_path):
-        logger.info(f"Running inference on single image: {input_path}")
-        results = predict(
-            model_path,
-            input_path,
-            output_path,
-            is_dir=False,
-            device=device,
-            model_name=model_name,
-            topk=getattr(args, 'topk', 3),
-            save_probs=getattr(args, 'save_probs', False),
-            output_format=getattr(args, 'output_format', 'submit'),
-            confidence_threshold=getattr(args, 'confidence_threshold', None),
-            tta_views=getattr(args, 'tta_views', None),
-            cfg=cfg,
-        )
-    else:
-        logger.info(f"Running inference on directory: {input_path}")
-        results = predict(
-            model_path,
-            input_path,
-            output_path,
-            is_dir=True,
-            device=device,
-            model_name=model_name,
-            batch_size=getattr(args, 'batch_size', None),
-            num_workers=getattr(args, 'num_workers', None),
-            topk=getattr(args, 'topk', 3),
-            save_probs=getattr(args, 'save_probs', False),
-            output_format=getattr(args, 'output_format', 'submit'),
-            confidence_threshold=getattr(args, 'confidence_threshold', None),
-            tta_views=getattr(args, 'tta_views', None),
-            cfg=cfg,
-        )
+    try:
+        if os.path.isfile(input_path):
+            logger.info(f"Running inference on single image: {input_path}")
+            results = predict(
+                model_path,
+                input_path,
+                output_path,
+                is_dir=False,
+                device=device,
+                model_name=model_name,
+                topk=getattr(args, 'topk', 3),
+                save_probs=getattr(args, 'save_probs', False),
+                output_format=getattr(args, 'output_format', 'submit'),
+                confidence_threshold=getattr(args, 'confidence_threshold', None),
+                tta_views=getattr(args, 'tta_views', None),
+                cfg=cfg,
+            )
+        else:
+            logger.info(f"Running inference on directory: {input_path}")
+            results = predict(
+                model_path,
+                input_path,
+                output_path,
+                is_dir=True,
+                device=device,
+                model_name=model_name,
+                batch_size=getattr(args, 'batch_size', None),
+                num_workers=getattr(args, 'num_workers', None),
+                topk=getattr(args, 'topk', 3),
+                save_probs=getattr(args, 'save_probs', False),
+                output_format=getattr(args, 'output_format', 'submit'),
+                confidence_threshold=getattr(args, 'confidence_threshold', None),
+                tta_views=getattr(args, 'tta_views', None),
+                cfg=cfg,
+            )
+    except (RuntimeError, FileNotFoundError, ValueError) as exc:
+        logger.error("Inference failed: %s", exc)
+        logger.error(traceback.format_exc())
+        return
     
     # 保存预测结果
     if results:

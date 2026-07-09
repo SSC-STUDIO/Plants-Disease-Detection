@@ -521,36 +521,36 @@ def predict(
     # 初始化推理管理器
     inference = InferenceManager(model_path, device=device, model_name=model_name, cfg=cfg)
     
-    try:
-        # 加载模型
-        inference.load_model(model_name=model_name)
-        
-        # 进行预测
-        if is_dir:
-            # 检查目录是否存在
-            if not os.path.exists(input_path) or not os.path.isdir(input_path):
-                abs_input = os.path.abspath(input_path)
-                logger.error(f"Directory not found or not a directory: {abs_input}")
-                return []
-                
-            # 检查目录是否为空
-            image_extensions = get_image_extensions(cfg=cfg)
-            candidates = [
-                os.path.join(input_path, f)
-                for f in os.listdir(input_path)
-            ]
-            image_files = [
-                path
-                for path in candidates
-                if os.path.isfile(path) and is_image_file(path, image_extensions)
-            ]
-            image_files.sort()
-            if not image_files:
-                logger.error(f"No image files found in directory: {input_path}")
-                return []
-                
-            # 目录预测
-            logger.info(f"Predicting on {len(image_files)} images in {input_path}")
+    # 加载模型 —— 初始化错误（模型损坏、OOM等）直接传播给调用者，不静默吞掉
+    inference.load_model(model_name=model_name)
+    
+    # 进行预测
+    if is_dir:
+        # 检查目录是否存在
+        if not os.path.exists(input_path) or not os.path.isdir(input_path):
+            abs_input = os.path.abspath(input_path)
+            logger.error(f"Directory not found or not a directory: {abs_input}")
+            return []
+            
+        # 检查目录是否为空
+        image_extensions = get_image_extensions(cfg=cfg)
+        candidates = [
+            os.path.join(input_path, f)
+            for f in os.listdir(input_path)
+        ]
+        image_files = [
+            path
+            for path in candidates
+            if os.path.isfile(path) and is_image_file(path, image_extensions)
+        ]
+        image_files.sort()
+        if not image_files:
+            logger.error(f"No image files found in directory: {input_path}")
+            return []
+            
+        # 目录预测
+        logger.info(f"Predicting on {len(image_files)} images in {input_path}")
+        try:
             predictions = inference.predict_batch(
                 input_path,
                 batch_size=cfg.test_batch_size if batch_size is None else batch_size,
@@ -561,46 +561,53 @@ def predict(
                 confidence_threshold=confidence_threshold,
                 tta_views=tta_views,
             )
-        else:
-            # 单张图片预测
-            if not os.path.exists(input_path) or not os.path.isfile(input_path):
-                abs_input = os.path.abspath(input_path)
-                logger.error(f"File not found or not a file: {abs_input}")
-                return []
-                
-            # 对单个图像进行预测并将结果转换为列表格式
-            logger.info(f"Predicting on single image: {input_path}")
-            pred = inference.predict_single(input_path, tta_views=tta_views)
-            topk_safe = max(1, min(topk, len(pred)))
-            topk_indices = np.argsort(pred)[::-1][:topk_safe]
-            topk_items = [
-                {
-                    "class": inference._remap_label_index(int(idx), cfg=inference.config),
-                    "score": float(pred[idx]),
-                }
-                for idx in topk_indices
-            ]
-
-            result = {
-                'image_id': os.path.basename(input_path),
-                'disease_class': inference._remap_label_index(int(np.argmax(pred)), cfg=inference.config),
-                'confidence': float(np.max(pred)),
-                'topk': topk_items,
-            }
-            if save_probs:
-                result['probabilities'] = pred.tolist()
-            if confidence_threshold is not None:
-                result["low_confidence"] = float(np.max(pred)) < confidence_threshold
-            predictions = [result]
-        
-        # 保存预测结果
-        if output_file and predictions:
-            inference.save_predictions(predictions, output_file, output_format=output_format)
-            logger.info(f"Saved predictions to {output_file}")
+        except Exception as e:
+            logger.error(f"Error during batch prediction: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return []
+    else:
+        # 单张图片预测
+        if not os.path.exists(input_path) or not os.path.isfile(input_path):
+            abs_input = os.path.abspath(input_path)
+            logger.error(f"File not found or not a file: {abs_input}")
+            return []
             
-        return predictions
-    except Exception as e:
-        logger.error(f"Error during prediction: {str(e)}")
-        import traceback
-        logger.error(traceback.format_exc())
-        return [] 
+        # 对单个图像进行预测并将结果转换为列表格式
+        logger.info(f"Predicting on single image: {input_path}")
+        try:
+            pred = inference.predict_single(input_path, tta_views=tta_views)
+        except Exception as e:
+            logger.error(f"Error during single image prediction: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return []
+        
+        topk_safe = max(1, min(topk, len(pred)))
+        topk_indices = np.argsort(pred)[::-1][:topk_safe]
+        topk_items = [
+            {
+                "class": inference._remap_label_index(int(idx), cfg=inference.config),
+                "score": float(pred[idx]),
+            }
+            for idx in topk_indices
+        ]
+
+        result = {
+            'image_id': os.path.basename(input_path),
+            'disease_class': inference._remap_label_index(int(np.argmax(pred)), cfg=inference.config),
+            'confidence': float(np.max(pred)),
+            'topk': topk_items,
+        }
+        if save_probs:
+            result['probabilities'] = pred.tolist()
+        if confidence_threshold is not None:
+            result["low_confidence"] = float(np.max(pred)) < confidence_threshold
+        predictions = [result]
+    
+    # 保存预测结果
+    if output_file and predictions:
+        inference.save_predictions(predictions, output_file, output_format=output_format)
+        logger.info(f"Saved predictions to {output_file}")
+        
+    return predictions
