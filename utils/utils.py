@@ -1,4 +1,3 @@
-import shutil
 import copy
 import torch
 import sys
@@ -173,8 +172,21 @@ def save_latest_model(
     filename = os.path.join(cfg.weights, cfg.model_name, str(fold), "_latest_model.pth.tar")
     torch.save(state, filename)
     if is_best:
-        shutil.copyfile(filename, os.path.join(cfg.best_weights, cfg.model_name, str(fold), 'best_model.pth.tar'))
-        logger.info(f"Saved best model checkpoint to {filename}")
+        # When EMA is enabled, training.py supplies a separate ``best_state_dict``
+        # containing the EMA model weights (the weights that were actually
+        # selected as "best" during validation).  We persist those into the best
+        # checkpoint instead of the raw training weights so that downstream
+        # evaluation and inference — which always load ``best_model.pth.tar`` —
+        # use the superior EMA-averaged weights rather than the raw model.
+        best_payload = dict(state)
+        if "best_state_dict" in best_payload:
+            best_payload["state_dict"] = best_payload.pop("best_state_dict")
+            # Re-wrap in a fresh torch.save so the EMA state_dict goes into the
+            # best file while the latest file keeps the raw training state_dict
+            # for resume purposes.
+        best_filename = os.path.join(cfg.best_weights, cfg.model_name, str(fold), 'best_model.pth.tar')
+        torch.save(best_payload, best_filename)
+        logger.info(f"Saved best model checkpoint to {best_filename}")
 
 class AverageMeter:
     """计算并存储平均值和当前值的类"""

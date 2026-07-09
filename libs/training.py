@@ -693,7 +693,15 @@ class Trainer:
                 # 验证
                 val_loss, val_acc = 0.0, 0.0
                 if val_loader is not None:
-                    val_loss, val_acc = self.validate(model, val_loader, criterion, epoch)
+                    # When EMA is enabled, validate on the EMA model instead of
+                    # the raw model. EMA weights are smoother and typically
+                    # produce better generalisation, so they should drive
+                    # best-model selection and early-stopping decisions.
+                    # Without this, the EMA model is maintained but never
+                    # actually evaluated, wasting compute and potentially
+                    # selecting a worse checkpoint as "best".
+                    eval_model = model_ema.module if model_ema is not None else model
+                    val_loss, val_acc = self.validate(eval_model, val_loader, criterion, epoch)
                     is_best = val_acc > best_acc
                     best_acc = max(val_acc, best_acc)
                     log_epoch_results(self.logger, epoch, epochs, train_loss, train_acc, val_loss, val_acc)
@@ -703,9 +711,24 @@ class Trainer:
                     log_epoch_results(self.logger, epoch, epochs, train_loss, train_acc)
 
                 # 保存检查点（含scheduler与EMA状态，支持训练中断后正确恢复学习率调度与EMA权重）
+                #
+                # When EMA is enabled and this is a new best, persist the EMA
+                # weights (not the raw model) as the best checkpoint's state_dict.
+                # EMA was used for validation and selected as best — downstream
+                # evaluation and inference always load best_model.pth.tar, so
+                # storing the inferior raw weights there would silently waste the
+                # EMA benefit.  For the latest checkpoint (used only for resume),
+                # we keep the raw state_dict so that optimizer and scheduler
+                # state dicts correspond to the weights that were actually
+                # optimised.
+                if is_best and model_ema is not None:
+                    best_state = model_ema.module.state_dict()
+                else:
+                    best_state = model.state_dict()
                 checkpoint = {
                     'epoch': epoch + 1,
                     'state_dict': model.state_dict(),
+                    'best_state_dict': best_state,
                     'best_acc': best_acc,
                     'optimizer': optimizer.state_dict(),
                 }
