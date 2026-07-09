@@ -36,6 +36,24 @@ def _unfreeze_matching_parameters(model, trainable_keywords):
             param.requires_grad = True
 
 
+def _ensure_pretrained_cache_dir():
+    """确保 TORCH_HOME/HF_HOME 指向项目内缓存目录且目录存在。
+
+    设置环境变量可避免预训练权重下载到系统默认目录，同时确保目标
+    路径可写入。在设置成功时不覆盖已有的环境变量，保留用户自定义路径。
+    """
+    _pretrained_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'checkpoints', 'pretrained')
+    if os.environ.get('TORCH_HOME') or os.environ.get('HF_HOME'):
+        # 用户已通过环境变量覆盖，不强行设置
+        return
+    try:
+        os.makedirs(_pretrained_dir, exist_ok=True)
+        os.environ['TORCH_HOME'] = _pretrained_dir
+        os.environ['HF_HOME'] = _pretrained_dir
+    except OSError as exc:
+        print(f"Warning: could not create pretrained cache dir {_pretrained_dir}: {exc}")
+
+
 def _create_timm_model_with_retry(model_names, pretrained, **kwargs):
     """创建 timm 模型，支持重试和预训练权重回退。
 
@@ -152,9 +170,7 @@ def get_efficientnetv2(num_classes, pretrained=True):
     # SSL验证保持默认启用状态以确保安全
     # 如需使用特定证书，可通过环境变量 SSL_CERT_FILE 配置
 
-    # 设置环境变量
-    os.environ['TORCH_HOME'] = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'checkpoints', 'pretrained')
-    os.environ['HF_HOME'] = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'checkpoints', 'pretrained')
+    _ensure_pretrained_cache_dir()
 
     if timm is None:
         print("timm is not installed, falling back to torchvision efficientnet_v2_s")
