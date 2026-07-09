@@ -163,7 +163,7 @@ class PlantDiseaseDataset(Dataset):
         for filename, label in imgs:
             result = self.data_sanitizer.sanitize_dataset_record(
                 {"filename": filename, "label": label},
-                allowed_extensions={'.jpg', '.jpeg', '.png', '.bmp', '.gif', '.webp'}
+                allowed_extensions=set(ext.lower() for ext in self.config.image_extensions),
             )
             if result.is_valid:
                 sanitized_imgs.append((result.sanitized_data["filename"], result.sanitized_data["label"]))
