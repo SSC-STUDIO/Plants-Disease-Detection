@@ -231,16 +231,19 @@ class InferenceManager:
         # Load and transform image - SECURITY FIX: Use secure image loading
         try:
             if self.strict_image_validation:
-                # Use secure loader for strict validation
+                # Use secure loader for strict validation.
+                # DO NOT pass target_size here — the transform pipeline (build_transforms)
+                # already includes T.Resize for the model's expected input dimensions.
+                # Passing target_size would cause a wasteful double-resize and degrade
+                # image quality via cascaded interpolation artifacts.
                 image = self.secure_image_loader.load_image(
-                    image_path, 
+                    image_path,
                     mode='RGB',
-                    target_size=(self.config.img_width, self.config.img_height)
                 )
             else:
                 # Fallback to basic secure load
                 image = secure_load_image(image_path, mode='RGB')
-                
+
             image_tensor = transform(image).unsqueeze(0).to(self.device)
         except ImageSecurityError as e:
             self.logger.error(f"Image security error for {image_path}: {str(e)}")
