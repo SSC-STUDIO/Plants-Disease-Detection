@@ -253,6 +253,20 @@ class DefaultConfigs:
     # 越靠前的规则优先匹配，匹配后不再应用后续规则。
     label_remap_ranges: List[List[int]] = field(default_factory=lambda: [[43, 2]])
 
+    # ===== 安全配置 Security Configuration =====
+    # 这些字段在 __post_init__ 中被覆盖（model_hash_cache_path 依赖 paths.log_dir），
+    # 此处声明的默认值用于 asdict() 导出、dataclass 内省，以及没有经过 __post_init__
+    # 构造的 DefaultConfigs 实例的后备值。
+    safe_max_image_pixels: int = 100_000_000       # 最大图像像素数（防解压炸弹）
+    safe_max_image_dimension: int = 10000          # 最大图像边长（像素）
+    safe_max_file_size: int = 100 * 1024 * 1024    # 最大文件大小（100MB）
+    safe_min_file_size: int = 100                  # 最小文件大小（字节）
+    enable_model_integrity_check: bool = True      # 启用模型哈希验证
+    model_hash_cache_path: str = field(default="") # __post_init__ 中基于 paths.log_dir 计算
+    enable_path_traversal_protection: bool = True  # 启用路径遍历保护
+    enable_label_validation: bool = True           # 启用标签验证
+    strict_image_validation: bool = True           # 启用严格图像验证
+
     def __post_init__(self):
         """初始化后的验证和设置"""
         # 初始化依赖于paths的字段
@@ -315,29 +329,11 @@ class DefaultConfigs:
         elif not isinstance(self.aug_num_workers, int) or self.aug_num_workers <= 0:
             raise ValueError("aug_num_workers must be 'auto' or a positive integer")
 
-        # SECURITY FIX: Initialize security-related configurations
-        self._init_security_configs()
+        # SECURITY: model_hash_cache_path 依赖 paths.log_dir，需要在此处计算
+        self.model_hash_cache_path = self.paths.log_dir + "model_hashes.json"
 
         # 自动同步类别数
         self.refresh_num_classes_from_data_dirs()
-
-    def _init_security_configs(self):
-        """初始化安全配置"""
-        # Image Security Settings - 图像安全设置
-        # 防止解压炸弹攻击(decompression bomb)
-        self.safe_max_image_pixels = 100_000_000  # 100MP
-        self.safe_max_image_dimension = 10000     # 最大10000像素边长
-        self.safe_max_file_size = 100 * 1024 * 1024  # 最大100MB文件
-        self.safe_min_file_size = 100              # 最小100字节
-
-        # Model Integrity Settings - 模型完整性设置
-        self.enable_model_integrity_check = True   # 启用模型哈希验证
-        self.model_hash_cache_path = self.paths.log_dir + "model_hashes.json"
-
-        # Data Validation Settings - 数据验证设置
-        self.enable_path_traversal_protection = True  # 启用路径遍历保护
-        self.enable_label_validation = True           # 启用标签验证
-        self.strict_image_validation = True           # 启用严格图像验证
 
     def refresh_num_classes_from_data_dirs(self) -> int:
         """从数据目录自动检测类别数量。
