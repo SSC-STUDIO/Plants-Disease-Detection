@@ -787,46 +787,77 @@ class Trainer:
     
     def validate(self, model, val_loader, criterion, epoch):
         """验证模型
-        
+
         参数:
             model: 要验证的模型
             val_loader: 验证数据加载器
             criterion: 损失函数
             epoch: 当前轮次
-            
+
         返回:
             验证损失和准确率
         """
         val_losses = AverageMeter()
         val_top1 = AverageMeter()
-        
+
         # Switch to evaluation mode
         model.eval()
-        
+
+        # Track skipped batches for resilience reporting — a single
+        # corrupted image should not crash the entire validation pass.
+        skipped_batches = 0
+        consecutive_errors = 0
+        max_consecutive_errors = 50
+
         with torch.no_grad():
             pbar = tqdm(val_loader, desc=f'Validation Epoch {epoch}')
             for iter, (input, target) in enumerate(pbar):
                 if self.config.max_val_batches is not None and iter >= self.config.max_val_batches:
                     self.logger.info(f"Stopping validation epoch {epoch} after {self.config.max_val_batches} batches")
                     break
-                input = input.to(self.device)
-                target = torch.as_tensor(target).to(self.device)
-                
-                # Forward pass
-                output = model(input)
-                loss = criterion(output, target)
-                
-                # Measure accuracy and record loss
-                prec1, _ = accuracy(output, target, topk=(1, 2))
-                val_losses.update(loss.item(), input.size(0))
-                val_top1.update(prec1.item(), input.size(0))
-                
-                # Update progress bar
-                pbar.set_postfix({
-                    'loss': f'{val_losses.avg:.3f}',
-                    'top1': f'{val_top1.avg:.3f}'
-                })
-        
+
+                try:
+                    if consecutive_errors >= max_consecutive_errors:
+                        self.logger.error(
+                            f"Validation epoch {epoch}: too many consecutive errors ({consecutive_errors}), "
+                            f"stopping validation early"
+                        )
+                        break
+
+                    input = input.to(self.device)
+                    target = torch.as_tensor(target).to(self.device)
+
+                    # Forward pass
+                    output = model(input)
+                    loss = criterion(output, target)
+
+                    # Measure accuracy and record loss
+                    prec1, _ = accuracy(output, target, topk=(1, 2))
+                    val_losses.update(loss.item(), input.size(0))
+                    val_top1.update(prec1.item(), input.size(0))
+
+                    consecutive_errors = 0
+
+                    # Update progress bar
+                    pbar.set_postfix({
+                        'loss': f'{val_losses.avg:.3f}',
+                        'top1': f'{val_top1.avg:.3f}',
+                        'skipped': skipped_batches,
+                    })
+                except Exception as e:
+                    consecutive_errors += 1
+                    skipped_batches += 1
+                    self.logger.warning(
+                        f"Validation epoch {epoch}, batch {iter}: {str(e)} — skipping this batch"
+                    )
+                    continue
+
+        if skipped_batches > 0:
+            self.logger.warning(
+                f"Validation epoch {epoch} completed with {skipped_batches} skipped batches "
+                f"out of {iter + 1} total"
+            )
+
         return val_losses.avg, val_top1.avg
     
     def _get_train_loader(self):
