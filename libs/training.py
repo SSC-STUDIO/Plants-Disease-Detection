@@ -737,10 +737,24 @@ class Trainer:
             self._finish_wandb({
                 'best_acc': best_acc,
                 'epochs_trained': epoch + 1 if 'epoch' in locals() else start_epoch,
+                'best_val_loss': self.performance_metrics.best_val_loss if self.performance_metrics.best_val_epoch is not None else None,
+                'best_val_epoch': self.performance_metrics.best_val_epoch,
             })
 
         self.logger.info("Training completed successfully")
-        return self.performance_metrics.get_summary()
+        summary = self.performance_metrics.get_summary()
+        if summary.get('best_val_epoch') is not None:
+            self.logger.info(
+                "Best validation loss: %.4f at epoch %d",
+                summary['best_val_loss'],
+                summary['best_val_epoch'],
+            )
+        self.logger.info(
+            "Best top-1 accuracy: %.4f at epoch %s",
+            summary['best_top1'],
+            summary['best_epoch'],
+        )
+        return summary
     
     def validate(self, model, val_loader, criterion, epoch):
         """验证模型
@@ -936,10 +950,12 @@ class PerformanceMetrics:
             'top2': [],
             'batch_time': [],
             'memory_usage': [],
-            'val_loss': []  # For early stopping
+            'val_loss': [],
         }
         self.epochs = []
         self.patience_counter = 0
+        self.best_val_loss = float('inf')
+        self.best_val_epoch = None
         
     def update_epoch_metrics(self, epoch: int, loss: float, top1: float, 
                            top2: float, batch_time: float, memory_usage: float,
@@ -964,6 +980,9 @@ class PerformanceMetrics:
         
         if val_loss is not None:
             self.metrics['val_loss'].append(val_loss)
+            if val_loss < self.best_val_loss:
+                self.best_val_loss = val_loss
+                self.best_val_epoch = epoch
         
     def should_stop(self, val_loss: float, patience: int) -> bool:
         """检查训练是否应该提前停止
@@ -974,16 +993,28 @@ class PerformanceMetrics:
         返回:
             表示是否停止训练的布尔值
         """
+        # 如果验证损失尚未被记录（update_epoch_metrics 未传入 val_loss），
+        # 将本次作为基线记录，不递增耐心计数器。
         if not self.metrics['val_loss']:
             self.metrics['val_loss'].append(val_loss)
+            if val_loss < self.best_val_loss:
+                self.best_val_loss = val_loss
+                self.best_val_epoch = self.epochs[-1] if self.epochs else None
             return False
-            
-        if val_loss >= min(self.metrics['val_loss']):
+
+        # 与历史最佳验证损失比较
+        best_so_far = min(self.metrics['val_loss'])
+        if val_loss >= best_so_far:
             self.patience_counter += 1
         else:
             self.patience_counter = 0
-            
+
+        # 记录本轮验证损失
         self.metrics['val_loss'].append(val_loss)
+        if val_loss < self.best_val_loss:
+            self.best_val_loss = val_loss
+            self.best_val_epoch = self.epochs[-1] if self.epochs else None
+
         return self.patience_counter >= patience
         
     def get_summary(self) -> Dict[str, Any]:
@@ -993,15 +1024,26 @@ class PerformanceMetrics:
                 'best_top1': 0.0,
                 'best_epoch': None,
                 'avg_batch_time': 0.0,
-                'peak_memory': 0.0
+                'peak_memory': 0.0,
+                'best_val_loss': None,
+                'best_val_epoch': None,
             }
 
-        return {
+        summary = {
             'best_top1': float(max(self.metrics['top1'])),
             'best_epoch': int(self.epochs[np.argmax(self.metrics['top1'])]),
             'avg_batch_time': float(np.mean(self.metrics['batch_time'])) if self.metrics['batch_time'] else 0.0,
-            'peak_memory': float(max(self.metrics['memory_usage'])) if self.metrics['memory_usage'] else 0.0
+            'peak_memory': float(max(self.metrics['memory_usage'])) if self.metrics['memory_usage'] else 0.0,
         }
+        
+        if self.best_val_epoch is not None:
+            summary['best_val_loss'] = float(self.best_val_loss)
+            summary['best_val_epoch'] = int(self.best_val_epoch)
+        else:
+            summary['best_val_loss'] = None
+            summary['best_val_epoch'] = None
+            
+        return summary
 
 def init_logger(log_name='train_details.log', cfg: Optional[Any] = None) -> Logger:
     """初始化Logger对象
