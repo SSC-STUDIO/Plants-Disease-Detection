@@ -1,8 +1,17 @@
 """Tests for utility functions."""
 import torch
+import pytest
 
 from config import DefaultConfigs
-from utils.utils import build_transforms, get_loss_function, get_optimizer, get_scheduler, handle_datasets
+from utils.utils import (
+    build_transforms,
+    FocalLoss,
+    ImprovedFocalLoss,
+    get_loss_function,
+    get_optimizer,
+    get_scheduler,
+    handle_datasets,
+)
 
 
 class TestTransforms:
@@ -35,6 +44,36 @@ class TestLossFunctions:
         cfg.label_smoothing = 0.0
         loss_fn = get_loss_function(torch.device('cpu'), cfg=cfg)
         assert loss_fn is not None
+
+    @pytest.mark.parametrize("gamma,alpha", [(3.0, 0.5), (1.5, 0.1), (5.0, 0.75)])
+    def test_focal_loss_passes_config_params(self, gamma, alpha):
+        """Regression: cfg.focal_loss_gamma / focal_loss_alpha must reach FocalLoss."""
+        cfg = DefaultConfigs()
+        cfg.use_focal_loss = True
+        cfg.label_smoothing = 0.0
+        cfg.focal_loss_gamma = gamma
+        cfg.focal_loss_alpha = alpha
+
+        loss_fn = get_loss_function(torch.device('cpu'), cfg=cfg)
+
+        assert isinstance(loss_fn, FocalLoss)
+        assert loss_fn.focusing_param == gamma
+        assert loss_fn.balance_param == alpha
+
+    @pytest.mark.parametrize("gamma,alpha", [(3.0, 0.5), (1.5, 0.1), (5.0, 0.75)])
+    def test_improved_focal_loss_passes_config_params(self, gamma, alpha):
+        """Regression: cfg params must reach ImprovedFocalLoss when label_smoothing > 0."""
+        cfg = DefaultConfigs()
+        cfg.use_focal_loss = True
+        cfg.label_smoothing = 0.1
+        cfg.focal_loss_gamma = gamma
+        cfg.focal_loss_alpha = alpha
+
+        loss_fn = get_loss_function(torch.device('cpu'), cfg=cfg)
+
+        assert isinstance(loss_fn, ImprovedFocalLoss)
+        assert loss_fn.gamma == gamma
+        assert loss_fn.alpha == alpha
 
 
 class TestOptimizers:

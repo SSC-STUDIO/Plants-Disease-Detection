@@ -744,25 +744,45 @@ class LabelSmoothingCrossEntropy(nn.Module):
 
 def get_loss_function(device: torch.device, cfg: Optional[DefaultConfigs] = None):
     """获取损失函数
-    
+
     参数:
         device: 设备
-        
+        cfg: 配置对象（如果为None则使用默认配置）
+
     返回:
         损失函数
+
+    NOTE: FocalLoss 的 focusing_param / balance_param 和 ImprovedFocalLoss 的
+    gamma / alpha 必须从 cfg.focal_loss_gamma / cfg.focal_loss_alpha 传入，
+    而不是使用硬编码默认值。此前这两个配置字段虽然被声明在 config.py 中，
+    但实际从未被 get_loss_function 读取——用户修改它们不会有任何效果，
+    这会静默地导致训练使用与预期不符的损失超参数。
     """
     cfg = cfg or config
     if cfg.use_focal_loss:
+        focal_gamma = getattr(cfg, 'focal_loss_gamma', 2.0)
+        focal_alpha = getattr(cfg, 'focal_loss_alpha', 0.25)
+
         if cfg.label_smoothing > 0:
             criterion = ImprovedFocalLoss(
-                gamma=2.0,
-                alpha=0.25,
+                gamma=focal_gamma,
+                alpha=focal_alpha,
                 label_smoothing=cfg.label_smoothing
             ).to(device)
-            logger.info("Using Improved Focal Loss with label smoothing")
+            logger.info(
+                "Using Improved Focal Loss with label smoothing "
+                "(gamma=%.2f, alpha=%.2f, label_smoothing=%.2f)",
+                focal_gamma, focal_alpha, cfg.label_smoothing,
+            )
         else:
-            criterion = FocalLoss().to(device)
-            logger.info("Using Focal Loss")
+            criterion = FocalLoss(
+                focusing_param=focal_gamma,
+                balance_param=focal_alpha,
+            ).to(device)
+            logger.info(
+                "Using Focal Loss (gamma=%.2f, alpha=%.2f)",
+                focal_gamma, focal_alpha,
+            )
     else:
         if cfg.label_smoothing > 0:
             criterion = LabelSmoothingCrossEntropy(cfg.label_smoothing).to(device)
@@ -770,7 +790,7 @@ def get_loss_function(device: torch.device, cfg: Optional[DefaultConfigs] = None
         else:
             criterion = nn.CrossEntropyLoss().to(device)
             logger.info("Using standard Cross Entropy Loss")
-    
+
     return criterion
 
 class MyEncoder(json.JSONEncoder):
