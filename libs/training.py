@@ -352,20 +352,19 @@ class Trainer:
                 self.logger.warning(f"Cannot find validation data at {val_path} or {self.config.val_data}")
                 return None
         
-        # 检查目录中是否有图像文件
-        image_files = 0
-        for root, _, files in os.walk(val_path):
-            for file in files:
-                if file.lower().endswith(get_image_extensions(cfg=self.config)):
-                    image_files += 1
+        # 获取数据集文件列表
+        # NOTE: Previously this code pre-scanned the entire directory tree
+        # with os.walk() to count image files before calling get_files(),
+        # which itself traverses the same directory a second time.  The
+        # pre-scan is removed to eliminate the redundant I/O pass —
+        # get_files() already returns the valid image collection, so we
+        # simply check its output length instead.
+        val_files = get_files(val_path, mode="val", cfg=self.config)
 
-        if image_files == 0:
+        if len(val_files) == 0:
             self.logger.warning(f"No image files found in validation path: {val_path}")
             return None
-        
-        # 获取数据集文件列表
-        val_files = get_files(val_path, mode="val", cfg=self.config)
-        
+
         # 记录验证文件数量
         self.logger.info(f"Validation dataset contains {len(val_files)} images")
         
@@ -808,20 +807,21 @@ class Trainer:
             else:
                 raise FileNotFoundError(f"Cannot find training data at {train_path} or {self.config.train_data}")
         
-        # 检查目录中是否有图像文件
-        image_files = 0
-        for root, _, files in os.walk(train_path):
-            for file in files:
-                if file.lower().endswith(get_image_extensions(cfg=self.config)):
-                    image_files += 1
-        
-        if image_files == 0:
+        # 获取数据集文件列表
+        # NOTE: Previously this code pre-scanned the entire directory tree
+        # with os.walk() to count image files before calling get_files(),
+        # which itself traverses the same directory a second time.  On a
+        # dataset of tens of thousands of images this double I/O pass adds
+        # noticeable startup latency for no benefit — get_files() already
+        # returns the collection of valid images, so checking its output
+        # length is both cheaper and more accurate.  The pre-scan is removed
+        # to eliminate the redundant traversal.
+        train_files = get_files(train_path, mode="train", cfg=self.config)
+
+        if len(train_files) == 0:
             self.logger.error(f"No image files found in training path: {train_path}")
             raise ValueError(f"No training images found in {train_path}")
-        
-        # 获取数据集文件列表
-        train_files = get_files(train_path, mode="train", cfg=self.config)
-        
+
         # 记录训练文件数量
         self.logger.info(f"Training dataset contains {len(train_files)} images")
         
