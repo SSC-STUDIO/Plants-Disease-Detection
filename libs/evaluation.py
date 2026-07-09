@@ -200,13 +200,15 @@ def evaluate_model(
         validate_images=cfg.enable_image_validation,
         validation_workers=cfg.image_validation_workers,
     )
+    _eval_workers = cfg.num_workers if num_workers is None else num_workers
     eval_loader = DataLoader(
         eval_dataset,
         batch_size=cfg.val_batch_size if batch_size is None else batch_size,
         shuffle=False,
-        num_workers=cfg.num_workers if num_workers is None else num_workers,
+        num_workers=_eval_workers,
         pin_memory=eval_device.type == "cuda",
         collate_fn=collate_fn,
+        persistent_workers=_eval_workers > 0,
     )
 
     criterion = get_loss_function(eval_device, cfg=cfg)
@@ -232,7 +234,7 @@ def evaluate_model(
     with torch.no_grad():
         for inputs, targets in eval_loader:
             inputs = inputs.to(eval_device)
-            targets_tensor = torch.tensor(targets).to(eval_device)
+            targets_tensor = torch.as_tensor(targets).to(eval_device)
 
             # Raw logits used for loss (no TTA — consistent with training).
             logits = model(inputs)

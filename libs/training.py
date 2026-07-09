@@ -384,13 +384,15 @@ class Trainer:
             validation_workers=self.config.image_validation_workers,
             cfg=self.config,
         )
+        persistent = self.config.num_workers > 0
         return DataLoader(
-            val_dataset, 
+            val_dataset,
             batch_size=self.config.val_batch_size,
             shuffle=False,
             num_workers=self.config.num_workers,
             pin_memory=True,
-            collate_fn=collate_fn
+            collate_fn=collate_fn,
+            persistent_workers=persistent,
         )
 
     def _get_progressive_size(self, epoch):
@@ -804,7 +806,7 @@ class Trainer:
                     self.logger.info(f"Stopping validation epoch {epoch} after {self.config.max_val_batches} batches")
                     break
                 input = input.to(self.device)
-                target = torch.tensor(target).to(self.device)
+                target = torch.as_tensor(target).to(self.device)
                 
                 # Forward pass
                 output = model(input)
@@ -903,14 +905,16 @@ class Trainer:
             else:
                 self.logger.warning("Weighted sampler requested, but training labels were not available in expected format")
 
+        persistent = self.config.num_workers > 0
         return DataLoader(
-            train_dataset, 
+            train_dataset,
             batch_size=self.config.train_batch_size,
             shuffle=shuffle,
             sampler=sampler,
             num_workers=self.config.num_workers,
             pin_memory=True,
-            collate_fn=collate_fn
+            collate_fn=collate_fn,
+            persistent_workers=persistent,
         )
 
 class MemoryTracker:
@@ -1016,27 +1020,18 @@ class PerformanceMetrics:
         返回:
             表示是否停止训练的布尔值
         """
-        # 如果验证损失尚未被记录（update_epoch_metrics 未传入 val_loss），
-        # 将本次作为基线记录，不递增耐心计数器。
-        if not self.metrics['val_loss']:
-            self.metrics['val_loss'].append(val_loss)
-            if val_loss < self.best_val_loss:
-                self.best_val_loss = val_loss
-                self.best_val_epoch = self.epochs[-1] if self.epochs else None
-            return False
-
-        # 与历史最佳验证损失比较
-        best_so_far = min(self.metrics['val_loss'])
-        if val_loss >= best_so_far:
+        # 与已追踪的历史最佳验证损失比较（self.best_val_loss 初始为 inf，
+        # 每轮检查后增量更新，无需对 growing list 做 O(n) min() 重算）。
+        if val_loss >= self.best_val_loss:
             self.patience_counter += 1
         else:
             self.patience_counter = 0
-
-        # 记录本轮验证损失
-        self.metrics['val_loss'].append(val_loss)
-        if val_loss < self.best_val_loss:
             self.best_val_loss = val_loss
             self.best_val_epoch = self.epochs[-1] if self.epochs else None
+
+        # 记录本轮验证损失（仅由 should_stop 维护，避免与
+        # update_epoch_metrics 双重追加导致 patience 判断偏差）
+        self.metrics['val_loss'].append(val_loss)
 
         return self.patience_counter >= patience
         

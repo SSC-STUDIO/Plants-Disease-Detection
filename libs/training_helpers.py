@@ -37,7 +37,7 @@ def validate_batch(batch, iter, log, device):
         return None, None, False
     
     input_tensor = input_data.to(device)
-    target_tensor = torch.tensor(target).to(device)
+    target_tensor = torch.as_tensor(target).to(device)
     return input_tensor, target_tensor, True
 
 
