@@ -223,17 +223,31 @@ def evaluate_model(
     # LabelSmoothingCrossEntropy, nn.CrossEntropyLoss) applies its OWN
     # log-softmax internally.  Passing log(softmax(x)) would double-apply it
     # and produce meaningless loss values, silently degrading eval reports.
+    #
+    # PERFORMANCE: run model(inputs) ONCE per batch to get raw logits for loss,
+    # then derive probabilities from the same logits when TTA is off (views=1)
+    # instead of calling _predict_probabilities (which does its own forward
+    # pass).  This halves the compute cost of the eval loop for the common
+    # tta_views=1 case.
     with torch.no_grad():
         for inputs, targets in eval_loader:
             inputs = inputs.to(eval_device)
             targets_tensor = torch.tensor(targets).to(eval_device)
 
-            # Probabilities used for accuracy / prediction (supports TTA).
-            probabilities = tta_helper._predict_probabilities(inputs, tta_views=tta_views)
-
             # Raw logits used for loss (no TTA — consistent with training).
             logits = model(inputs)
             loss = criterion(logits, targets_tensor)
+
+            # Probabilities used for accuracy / prediction.
+            # When TTA is disabled (views=1) we derive probabilities from the
+            # logits we already have, avoiding a second forward pass.
+            # For TTA > 1 we still call _predict_probabilities, which does its
+            # own forward passes through the model for the augmented variants.
+            actual_tta = tta_views if tta_views is not None else cfg.tta_views
+            if actual_tta > 1:
+                probabilities = tta_helper._predict_probabilities(inputs, tta_views=actual_tta)
+            else:
+                probabilities = torch.nn.functional.softmax(logits, dim=1)
 
             prec1, preck = accuracy(logits, targets_tensor, topk=(1, max(1, topk)))
             loss_meter.update(loss.item(), inputs.size(0))
