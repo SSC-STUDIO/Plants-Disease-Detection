@@ -303,10 +303,6 @@ class Trainer:
                 if iter % 100 == 0:
                     cleanup_memory(self.device)
                 
-                del output
-                if self.device.type == 'cuda':
-                    torch.cuda.empty_cache()
-                
             except Exception as e:
                 consecutive_errors += 1
                 error_count += 1
