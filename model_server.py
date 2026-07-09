@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import functools
 import os
+import time
+from collections import defaultdict, deque
 from pathlib import Path
 
 from flask import Flask, abort, jsonify, request, send_file
@@ -22,21 +24,74 @@ API_KEY = os.environ.get("MODEL_API_KEY")
 DEBUG_MODE = os.environ.get("FLASK_DEBUG", "0") == "1"
 MODEL_DIR = Path(os.environ.get("MODEL_DIR", Path(__file__).resolve().parent / "checkpoints")).resolve()
 
+# --- Rate limiting for authentication attempts ---
+# Prevents brute-force attacks on the API key by tracking failed auth attempts
+# per client IP within a rolling time window.
+RATE_LIMIT_WINDOW = int(os.environ.get("MODEL_API_RATE_WINDOW", "60"))  # seconds
+RATE_LIMIT_MAX_FAILURES = int(os.environ.get("MODEL_API_RATE_MAX_FAILURES", "10"))
+
+# Map: client_ip -> deque of failure timestamps
+_auth_failures: "defaultdict[str, deque[float]]" = defaultdict(deque)
+
+
+def _record_auth_failure(client_ip: str) -> int:
+    """Record a failed auth attempt and return the current failure count in the window."""
+    now = time.monotonic()
+    failures = _auth_failures[client_ip]
+    # Evict timestamps outside the rolling window
+    cutoff = now - RATE_LIMIT_WINDOW
+    while failures and failures[0] < cutoff:
+        failures.popleft()
+    failures.append(now)
+    return len(failures)
+
+
+def _is_rate_limited(client_ip: str) -> bool:
+    """Check whether the client IP has exceeded the failure threshold."""
+    now = time.monotonic()
+    failures = _auth_failures[client_ip]
+    cutoff = now - RATE_LIMIT_WINDOW
+    while failures and failures[0] < cutoff:
+        failures.popleft()
+    return len(failures) >= RATE_LIMIT_MAX_FAILURES
+
 
 def require_auth(handler):
-    """Require an X-API-Key header for model artifact endpoints."""
+    """Require an X-API-Key header for model artifact endpoints.
+
+    Includes IP-based rate limiting: after RATE_LIMIT_MAX_FAILURES failed
+    authentication attempts within RATE_LIMIT_WINDOW seconds, subsequent
+    requests from the same IP are rejected with 429 Too Many Requests until
+    the oldest failure expires from the window.
+    """
 
     @functools.wraps(handler)
     def decorated_function(*args, **kwargs):
+        client_ip = request.remote_addr or "unknown"
+
+        if _is_rate_limited(client_ip):
+            app.logger.warning(
+                "Rate limit exceeded for %s (%d failures in %ds window)",
+                client_ip,
+                RATE_LIMIT_MAX_FAILURES,
+                RATE_LIMIT_WINDOW,
+            )
+            return jsonify({
+                "error": "Too many failed authentication attempts",
+                "message": f"Rate limit: max {RATE_LIMIT_MAX_FAILURES} failures per {RATE_LIMIT_WINDOW}s",
+            }), 429
+
         if not API_KEY:
             return jsonify({"error": "Server is missing MODEL_API_KEY"}), 503
 
         auth_header = request.headers.get("X-API-Key")
         if not auth_header:
+            _record_auth_failure(client_ip)
             return jsonify({"error": "Unauthorized", "message": "Missing X-API-Key header."}), 401
 
         if auth_header != API_KEY:
-            app.logger.warning("Invalid API key attempt from %s", request.remote_addr)
+            _record_auth_failure(client_ip)
+            app.logger.warning("Invalid API key attempt from %s", client_ip)
             return jsonify({"error": "Unauthorized", "message": "Invalid API key."}), 401
 
         return handler(*args, **kwargs)
@@ -94,6 +149,11 @@ def download_model(model_path: str):
     return send_file(file_path, as_attachment=True, download_name=file_path.name)
 
 
+@app.errorhandler(429)
+def too_many_requests(error):
+    return jsonify({"error": "Too many failed authentication attempts"}), 429
+
+
 @app.errorhandler(404)
 def not_found(error):
     return jsonify({"error": "Not found"}), 404
@@ -115,6 +175,7 @@ if __name__ == "__main__":
         print("WARNING: Running in DEBUG mode. Set FLASK_DEBUG=0 for production.")
     if not API_KEY:
         print("WARNING: MODEL_API_KEY is not set. Authenticated endpoints will return 503.")
+    print(f"Rate limit: {RATE_LIMIT_MAX_FAILURES} failed auth attempts per {RATE_LIMIT_WINDOW}s per IP")
 
     MODEL_DIR.mkdir(parents=True, exist_ok=True)
     app.run(host="0.0.0.0", port=5000, debug=DEBUG_MODE)
