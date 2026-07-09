@@ -279,7 +279,7 @@ def get_convnext(num_classes, pretrained=True):
     return model
 
 
-def get_eva02_large(num_classes, pretrained=True):
+def get_eva02_base(num_classes, pretrained=True):
     """获取EVA-02 Base模型 - 2024年最先进的视觉Transformer（针对8GB显存优化）
 
     Args:
@@ -317,6 +317,10 @@ def get_eva02_large(num_classes, pretrained=True):
         print("EVA-02 Base model created without pretrained weights (full training mode)")
 
     return model
+
+
+# 向后兼容别名：旧配置中可能引用了 "eva02_large"
+get_eva02_large = get_eva02_base
 
 
 def get_convnextv2_base_384(num_classes, pretrained=True):
@@ -485,7 +489,8 @@ MODEL_REGISTRY = {
     "efficientnetv2_s": get_efficientnetv2,
     "convnext_small": get_convnext,
     "convnextv2_base_384": get_convnextv2_base_384,
-    "eva02_large": get_eva02_large,  # 2024年最新架构
+    "eva02_base": get_eva02_base,  # EVA-02 Base（2024年最新架构）
+    "eva02_large": get_eva02_base,  # 向后兼容别名，实际加载EVA-02 Base
     "swin_transformer": get_swin_transformer,
     "hybrid_model": get_hybrid_model,
     "ensemble_model": get_ensemble_model,
@@ -511,5 +516,5 @@ def get_net(model_name, num_classes, pretrained=True):
         print(f"Using model: {model_name}")
         return MODEL_REGISTRY[model_name](num_classes, pretrained=pretrained)
     else:
-        print(f"Model {model_name} not found, using default EVA-02 Large")
-        return get_eva02_large(num_classes, pretrained=pretrained)
+        print(f"Model {model_name} not found, using default convnextv2_base_384")
+        return get_convnextv2_base_384(num_classes, pretrained=pretrained)
