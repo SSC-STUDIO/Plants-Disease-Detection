@@ -356,9 +356,9 @@ class Trainer:
         image_files = 0
         for root, _, files in os.walk(val_path):
             for file in files:
-                if file.lower().endswith(('.jpg', '.jpeg', '.png')):
+                if file.lower().endswith(get_image_extensions(cfg=self.config)):
                     image_files += 1
-        
+
         if image_files == 0:
             self.logger.warning(f"No image files found in validation path: {val_path}")
             return None
@@ -812,7 +812,7 @@ class Trainer:
         image_files = 0
         for root, _, files in os.walk(train_path):
             for file in files:
-                if file.lower().endswith(('.jpg', '.jpeg', '.png')):
+                if file.lower().endswith(get_image_extensions(cfg=self.config)):
                     image_files += 1
         
         if image_files == 0:

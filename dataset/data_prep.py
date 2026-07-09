@@ -21,7 +21,7 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 from config import config, paths
-from utils.utils import get_image_glob_patterns
+from utils.utils import get_image_glob_patterns, get_image_extensions
 from utils.path_security import PathValidator, PathSecurityError, safe_makedirs
 import random
 from concurrent.futures import ThreadPoolExecutor
@@ -1520,7 +1520,7 @@ class DataPreparation:
                 file_paths = []
                 for root, _, files in os.walk(target_dir):
                     for file in files:
-                        if file.lower().endswith(('.jpg', '.jpeg', '.png')):
+                        if file.lower().endswith(get_image_extensions(cfg=self.config)):
                             file_paths.append(os.path.join(root, file))
                 
                 logger.info(f"Found {len(file_paths)} existing augmented files")

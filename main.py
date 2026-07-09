@@ -704,6 +704,8 @@ def setup_parser() -> argparse.ArgumentParser:
                                help='Enable dynamic batch size in exported model')
     export_parser.add_argument('--verify', action='store_true',
                                help='Verify exported model with sample inference')
+    export_parser.add_argument('--device', type=str, choices=['auto', 'cuda', 'cpu'],
+                               help='Device for export (default: from config)')
 
     return parser
 
@@ -1032,7 +1034,6 @@ def export_model(args) -> None:
         return
 
     from models.model import get_net
-    from utils.utils import setup_device
     from libs.checkpoint_utils import infer_num_classes_from_checkpoint, infer_model_name_from_path
 
     cfg = config
@@ -1062,8 +1063,15 @@ def export_model(args) -> None:
     logger.info(f"Input size: {img_height}x{img_width}")
     logger.info(f"Output path: {output_path}")
 
-    # 设置设备
-    device = setup_device(cfg)
+    # 设置设备 — resolve 'auto'/'cuda'/'cpu' to a torch.device
+    _device_str = getattr(args, 'device', None) or cfg.device
+    if _device_str == "cuda":
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    elif _device_str == "cpu":
+        device = torch.device("cpu")
+    else:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    logger.info(f"Using device: {device}")
 
     # 从 checkpoint 推断类别数，与推理/评估路径保持一致
     checkpoint_classes = infer_num_classes_from_checkpoint(model_path)
