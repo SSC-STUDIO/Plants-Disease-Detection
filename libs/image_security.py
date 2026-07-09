@@ -90,23 +90,26 @@ class SecureImageLoader:
     
     def validate_image_format(self, file_path: str) -> str:
         """验证图像格式是否安全
-        
+
+        根据文件扩展名判断是否属于受支持的安全格式集合。
+        扩展名不在 supported_formats 中时会立即抛出
+        :class:`ImageFormatError`，防止潜在的恶意文件被加载。
+
         Args:
             file_path: 图像文件路径
-            
+
         Returns:
-            图像格式字符串
-            
+            规范化后的图像格式字符串（大写，不带点）
+
         Raises:
-            ImageFormatError: 格式不支持或验证失败
+            ImageFormatError: 格式不支持
         """
-        # 检查文件扩展名
         ext = os.path.splitext(file_path)[1].upper().lstrip('.')
         if ext not in self.supported_formats:
-            # 某些特殊情况
-            if ext == 'JPEG':
-                ext = 'JPG'
-        
+            raise ImageFormatError(
+                f"Unsupported image format '.{ext}' for file: {file_path}. "
+                f"Supported: {sorted(self.supported_formats)}"
+            )
         return ext
     
     def verify_image_integrity(self, file_path: str) -> Tuple[bool, str]:
@@ -200,6 +203,8 @@ class SecureImageLoader:
                 
         except Image.DecompressionBombError as e:
             raise ImageTooLargeError(f"Decompression bomb detected: {e}")
+        except ImageSecurityError:
+            raise
         except Exception as e:
             raise ImageValidationError(f"Failed to load image: {e}")
     
@@ -255,6 +260,8 @@ class SecureImageLoader:
                     
         except Image.DecompressionBombError as e:
             raise ImageTooLargeError(f"Decompression bomb detected: {e}")
+        except ImageSecurityError:
+            raise
         except Exception as e:
             raise ImageValidationError(f"Failed to load image from bytes: {e}")
 
