@@ -19,6 +19,7 @@ from flask import Flask, abort, jsonify, request, send_file
 ALLOWED_EXTENSIONS = (".pth", ".pt", ".pth.tar", ".onnx", ".json")
 
 app = Flask(__name__)
+_start_time = time.monotonic()
 
 API_KEY = os.environ.get("MODEL_API_KEY")
 DEBUG_MODE = os.environ.get("FLASK_DEBUG", "0") == "1"
@@ -124,7 +125,43 @@ def is_allowed_artifact(model_path: str) -> bool:
 
 @app.route("/health", methods=["GET"])
 def health_check():
-    return jsonify({"status": "ok", "service": "model-download-service"})
+    """Return service status plus basic operational metrics.
+
+    Exposes model count and available disk space on the partition holding
+    MODEL_DIR so monitoring systems can detect resource exhaustion (e.g.
+    disk-full during checkpoint saves) without an additional SSH probe.
+    """
+    model_count = 0
+    total_size = 0
+    if MODEL_DIR.exists():
+        for path in MODEL_DIR.rglob("*"):
+            if path.is_file() and is_allowed_artifact(path.name):
+                model_count += 1
+                try:
+                    total_size += path.stat().st_size
+                except OSError:
+                    pass
+
+    disk_free = None
+    disk_total = None
+    try:
+        stat = os.statvfs(MODEL_DIR)
+        disk_free = stat.f_bavail * stat.f_frsize
+        disk_total = stat.f_blocks * stat.f_frsize
+    except OSError:
+        pass
+
+    uptime = time.monotonic() - _start_time
+
+    return jsonify({
+        "status": "ok",
+        "service": "model-download-service",
+        "model_count": model_count,
+        "model_dir_size": total_size,
+        "disk_free_bytes": disk_free,
+        "disk_total_bytes": disk_total,
+        "uptime_seconds": round(uptime, 1),
+    })
 
 
 @app.route("/models", methods=["GET"])

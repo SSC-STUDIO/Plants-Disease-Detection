@@ -152,6 +152,29 @@ class ModelEmaV2:
         actual_class = _get_ModelEmaV2_class()
         return actual_class(*args, **kwargs)
 
+def _check_disk_space(path: str, min_bytes: int = 512 * 1024 * 1024) -> None:
+    """Raise OSError if the partition holding *path* has less than *min_bytes* free.
+
+    A full disk during ``torch.save`` produces a cryptic truncate-on-write
+    exception that crashes the entire training run.  This pre-check gives
+    a clear, actionable error *before* any write begins, and also catches
+    the case where a partial checkpoint was already written (corrupting
+    the existing file) — without it, the latest/best .pth.tar would be
+    silently truncated and unusable for resume.
+    """
+    try:
+        stat = os.statvfs(path)
+        free = stat.f_bavail * stat.f_frsize
+    except OSError:
+        return  # best-effort; if statvfs fails we still attempt the save
+    if free < min_bytes:
+        raise OSError(
+            f"Insufficient disk space on {path}: {free / 1e9:.2f} GB free, "
+            f"need at least {min_bytes / 1e9:.2f} GB. Free up space or "
+            f"increase disk capacity before continuing training."
+        )
+
+
 def save_latest_model(
     state: Dict[str, Any],
     is_best: bool,
@@ -159,7 +182,7 @@ def save_latest_model(
     cfg: Optional[DefaultConfigs] = None,
 ):
     """保存模型检查点
-    
+
     参数:
         state: 要保存的状态字典
         is_best: 是否是最佳模型
@@ -168,8 +191,11 @@ def save_latest_model(
     cfg = cfg or config
     os.makedirs(os.path.join(cfg.weights, cfg.model_name, str(fold)), exist_ok=True)
     os.makedirs(os.path.join(cfg.best_weights, cfg.model_name, str(fold)), exist_ok=True)
-    
+
     filename = os.path.join(cfg.weights, cfg.model_name, str(fold), "_latest_model.pth.tar")
+    # Pre-check disk space before writing — a failed torch.save mid-write
+    # can corrupt the existing checkpoint, making resume impossible.
+    _check_disk_space(os.path.dirname(filename))
     torch.save(state, filename)
     if is_best:
         # When EMA is enabled, training.py supplies a separate ``best_state_dict``
@@ -181,10 +207,8 @@ def save_latest_model(
         best_payload = dict(state)
         if "best_state_dict" in best_payload:
             best_payload["state_dict"] = best_payload.pop("best_state_dict")
-            # Re-wrap in a fresh torch.save so the EMA state_dict goes into the
-            # best file while the latest file keeps the raw training state_dict
-            # for resume purposes.
         best_filename = os.path.join(cfg.best_weights, cfg.model_name, str(fold), 'best_model.pth.tar')
+        _check_disk_space(os.path.dirname(best_filename))
         torch.save(best_payload, best_filename)
         logger.info(f"Saved best model checkpoint to {best_filename}")
 
