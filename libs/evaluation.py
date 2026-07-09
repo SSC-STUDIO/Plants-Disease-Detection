@@ -12,7 +12,7 @@ from sklearn.metrics import classification_report, confusion_matrix
 
 from config import config, DefaultConfigs
 from dataset.dataloader import PlantDiseaseDataset, collate_fn, get_files
-from libs.checkpoint_utils import infer_num_classes_from_checkpoint
+from libs.checkpoint_utils import infer_model_name_from_path, infer_num_classes_from_checkpoint
 from libs.inference import InferenceManager
 from models.model import get_net
 from utils.utils import AverageMeter, accuracy, get_loss_function, handle_datasets
@@ -49,24 +49,6 @@ def _auto_model_path(cfg: DefaultConfigs) -> str:
     if os.path.exists(latest_model_path):
         return latest_model_path
     raise FileNotFoundError("Could not find any model weights. Please provide --model.")
-
-
-def _infer_model_name(model_path: str) -> Optional[str]:
-    path_norm = model_path.replace("\\", "/")
-    candidates = [
-        "densenet169",
-        "efficientnet_b4",
-        "efficientnetv2_s",
-        "convnext_small",
-        "convnextv2_base_384",
-        "swin_transformer",
-        "hybrid_model",
-        "ensemble_model",
-    ]
-    for name in candidates:
-        if f"/{name}/" in path_norm:
-            return name
-    return None
 
 
 def _infer_num_classes_from_labeled_dir(data_dir: Optional[str]) -> Optional[int]:
@@ -172,7 +154,7 @@ def evaluate_model(
     logger = _setup_logger(cfg)
 
     model_path = model_path or _auto_model_path(cfg)
-    inferred_name = _infer_model_name(model_path)
+    inferred_name = infer_model_name_from_path(model_path)
     model_name = model_name or inferred_name or cfg.model_name
     eval_device = _resolve_device(device)
     output_dir = output_dir or cfg.paths.report_dir

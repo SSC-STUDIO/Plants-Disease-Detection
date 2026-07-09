@@ -11,7 +11,7 @@ from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
 from utils.utils import MyEncoder, build_transforms, get_image_extensions, is_image_file
 from config import config
-from libs.checkpoint_utils import infer_num_classes_from_checkpoint
+from libs.checkpoint_utils import infer_model_name_from_path, infer_num_classes_from_checkpoint
 from models.model import get_net
 
 # SECURITY FIX: Import security modules for image validation and model integrity
@@ -27,24 +27,6 @@ from libs.model_integrity import (
     verify_model_before_loading,
     register_trained_model
 )
-
-
-def _infer_model_name(model_path: str) -> Optional[str]:
-    path_norm = model_path.replace("\\", "/")
-    candidates = [
-        "densenet169",
-        "efficientnet_b4",
-        "efficientnetv2_s",
-        "convnext_small",
-        "convnextv2_base_384",
-        "swin_transformer",
-        "hybrid_model",
-        "ensemble_model",
-    ]
-    for name in candidates:
-        if f"/{name}/" in path_norm:
-            return name
-    return None
 
 
 class InferenceManager:
@@ -166,7 +148,7 @@ class InferenceManager:
         if not os.path.isfile(model_path):
             raise ValueError(f"Model path is not a file: {model_path}")
         
-        inferred_model_name = _infer_model_name(model_path)
+        inferred_model_name = infer_model_name_from_path(model_path)
         model_name = model_name or self.model_name or inferred_model_name or self.config.model_name
         checkpoint_classes = infer_num_classes_from_checkpoint(model_path)
         if checkpoint_classes and checkpoint_classes != self.config.num_classes:
