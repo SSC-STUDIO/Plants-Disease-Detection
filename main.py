@@ -1027,6 +1027,7 @@ def export_model(args) -> None:
 
     from models.model import get_net
     from utils.utils import setup_device
+    from libs.checkpoint_utils import infer_num_classes_from_checkpoint, infer_model_name_from_path
 
     cfg = config
 
@@ -1037,7 +1038,7 @@ def export_model(args) -> None:
         return
 
     # 获取模型名称
-    model_name = getattr(args, 'model_name', None) or cfg.model_name
+    model_name = getattr(args, 'model_name', None) or infer_model_name_from_path(model_path) or cfg.model_name
 
     # 获取输入尺寸
     if hasattr(args, 'input_size') and args.input_size:
@@ -1058,6 +1059,14 @@ def export_model(args) -> None:
     # 设置设备
     device = setup_device(cfg)
 
+    # 从 checkpoint 推断类别数，与推理/评估路径保持一致
+    checkpoint_classes = infer_num_classes_from_checkpoint(model_path)
+    if checkpoint_classes and checkpoint_classes != cfg.num_classes:
+        logger.info(
+            f"Updating num_classes from {cfg.num_classes} to {checkpoint_classes} (inferred from checkpoint)"
+        )
+        cfg.num_classes = checkpoint_classes
+
     # 创建模型
     try:
         model = get_net(model_name, num_classes=cfg.num_classes, pretrained=False)
@@ -1074,6 +1083,7 @@ def export_model(args) -> None:
 
         model.eval()
         logger.info("Model loaded successfully")
+        logger.info(f"Exporting with num_classes={cfg.num_classes}")
     except Exception as e:
         logger.error(f"Failed to load model: {e}")
         return
