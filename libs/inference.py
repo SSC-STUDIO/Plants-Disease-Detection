@@ -326,15 +326,16 @@ class InferenceManager:
         # Make predictions
         results = []
         
+        failed_count = 0
         with torch.no_grad():
-            for batch_images, batch_paths in tqdm(dataloader, desc="Making predictions"):
+            for batch_images, batch_paths, batch_load_flags in tqdm(dataloader, desc="Making predictions"):
                 batch_images = batch_images.to(self.device)
                 probabilities = self._predict_probabilities(batch_images, tta_views=tta_views)
                 safe_topk = max(1, min(topk, probabilities.size(1)))
                 topk_scores, topk_indices = torch.topk(probabilities, k=safe_topk, dim=1)
                 
                 # Process predictions
-                for i, (probs, path) in enumerate(zip(probabilities, batch_paths)):
+                for i, (probs, path, load_failed) in enumerate(zip(probabilities, batch_paths, batch_load_flags)):
                     pred_index = int(torch.argmax(probs).item())
                     pred_label = self._remap_label_index(pred_index, cfg=self.config)
                     confidence = float(torch.max(probs).item())
@@ -345,6 +346,11 @@ class InferenceManager:
                         "disease_class": pred_label,
                         "confidence": confidence,
                     }
+
+                    if load_failed:
+                        result["load_error"] = True
+                        result["error_message"] = "Image failed to load; prediction is a placeholder"
+                        failed_count += 1
 
                     if return_topk:
                         topk_items = []
@@ -362,8 +368,12 @@ class InferenceManager:
                         result["low_confidence"] = confidence < confidence_threshold
 
                     results.append(result)
-        
-        self.logger.info(f"Processed {len(results)} images")
+
+        if failed_count > 0:
+            self.logger.warning(
+                f"Batch prediction completed with {failed_count}/{len(results)} image load failures"
+            )
+        self.logger.info(f"Processed {len(results)} images ({failed_count} load errors)")
         return results
     
     def save_predictions(
@@ -458,12 +468,12 @@ class InferenceDataset(Dataset):
         
     def __getitem__(self, idx):
         """获取单个数据样本
-        
+
         参数:
             idx: 索引
-            
+
         返回:
-            (图像张量, 图像路径)元组
+            (图像张量, 图像路径, 加载是否失败)元组
         """
         img_path = self.file_paths[idx]
         try:
@@ -474,15 +484,15 @@ class InferenceDataset(Dataset):
                 image = secure_load_image(img_path, mode='RGB')
                 
             image = self.transforms(image)
-            return image, img_path
+            return image, img_path, False
         except ImageSecurityError as e:
             logging.error(f"Image security error {img_path}: {str(e)}")
-            # Return empty image as fallback
-            return torch.zeros((3, self.config.img_height, self.config.img_width)), img_path
+            # Return empty tensor with load_failed=True so predict_batch can
+            # mark these results instead of silently generating fake predictions.
+            return torch.zeros((3, self.config.img_height, self.config.img_width)), img_path, True
         except Exception as e:
             logging.error(f"Error loading image {img_path}: {str(e)}")
-            # Return empty image
-            return torch.zeros((3, self.config.img_height, self.config.img_width)), img_path
+            return torch.zeros((3, self.config.img_height, self.config.img_width)), img_path, True
 
 def predict(
     model_path: str,
