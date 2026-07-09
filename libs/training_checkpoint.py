@@ -143,6 +143,71 @@ def setup_optimizer_state(optimizer, start_epoch: int, model_path: str, device, 
         logger.warning(f"Failed to restore optimizer state: {str(e)}")
 
 
+def restore_scheduler_state(scheduler, start_epoch: int, model_path: str, device, logger):
+    """Restore learning rate scheduler state from checkpoint.
+
+    Without this, a resumed cosine/onecycle scheduler restarts from the
+    initial learning rate instead of continuing the planned schedule,
+    which silently degrades training quality on every resume.
+
+    Args:
+        scheduler: Learning rate scheduler (or None)
+        start_epoch: Starting epoch
+        model_path: Model checkpoint path
+        device: Device
+        logger: Logger
+    """
+    if scheduler is None or start_epoch <= 0 or not model_path:
+        return
+
+    try:
+        checkpoint = torch.load(model_path, map_location=device, weights_only=True)
+        if "scheduler" in checkpoint:
+            scheduler.load_state_dict(checkpoint["scheduler"])
+            logger.info("Restored learning rate scheduler state")
+        else:
+            logger.warning(
+                "Checkpoint does not contain scheduler state; "
+                "LR schedule will restart from the beginning"
+            )
+    except Exception as e:
+        logger.warning(f"Failed to restore scheduler state: {str(e)}")
+
+
+def restore_ema_state(model_ema, model_path: str, device, logger):
+    """Restore EMA model weights from checkpoint.
+
+    Without this, a resumed training run loses all accumulated EMA weights
+    and starts averaging from the freshly-loaded model — effectively discarding
+    the EMA benefit for the first few resumed epochs.
+
+    Args:
+        model_ema: EMA model (or None)
+        model_path: Model checkpoint path
+        device: Device
+        logger: Logger
+    """
+    if model_ema is None or not model_path:
+        return
+
+    try:
+        checkpoint = torch.load(model_path, map_location=device, weights_only=True)
+        if "model_ema" in checkpoint:
+            ema_state = checkpoint["model_ema"]
+            if isinstance(ema_state, dict) and "module" in ema_state:
+                model_ema.module.load_state_dict(ema_state["module"])
+            elif isinstance(ema_state, dict):
+                model_ema.module.load_state_dict(ema_state)
+            logger.info("Restored EMA model state from checkpoint")
+        else:
+            logger.warning(
+                "Checkpoint does not contain EMA state; "
+                "EMA will start fresh from the loaded model weights"
+            )
+    except Exception as e:
+        logger.warning(f"Failed to restore EMA state: {str(e)}")
+
+
 def log_epoch_results(logger, epoch: int, epochs: int, train_loss: float, 
                       train_acc: float, val_loss: float = None, val_acc: float = None):
     """Log epoch results.

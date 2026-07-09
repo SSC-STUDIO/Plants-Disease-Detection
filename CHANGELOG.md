@@ -2,8 +2,13 @@
 
 ## [Unreleased]
 
+### Added
+- 训练循环 checkpoint 现在额外保存 LR scheduler 和 EMA 模型的 state_dict（`scheduler` / `model_ema` 键）
+- 新增 `restore_scheduler_state()` 和 `restore_ema_state()` 函数，用于继续训练时正确恢复学习率调度器和 EMA 累计权重
+
 ### Fixed
-- 推理函数 `predict()` 不再静默吞掉模型加载异常。模型损坏、CUDA OOM 等初始化级错误现在直接传播给调用者（`run_inference`），以 traceback 形式记录为致命错误，而非与"目录为空"混淆为同一返回值 `[]`。推理过程中的非致命错误（单张图片解码失败等）仍保持优雅降级返回空列表。
+- 继续训练时 LR scheduler 不再从初始学习率重新开始——余弦退火/OneCycle 调度中断后恢复，继续按原本计划走完剩余周期
+- 继续训练时 EMA 累积权重不再丢失——恢复训练时保持 EMA 权重的连续性，避免前几轮退化
 
 ## [0.2.0] - 2026-03-23
 

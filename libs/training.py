@@ -23,7 +23,8 @@ from libs.training_helpers import (
 )
 from libs.training_checkpoint import (
     load_training_state, load_model_weights, setup_model,
-    setup_optimizer_state, log_epoch_results
+    setup_optimizer_state, log_epoch_results,
+    restore_scheduler_state, restore_ema_state,
 )
 
 class Trainer:
@@ -664,6 +665,11 @@ class Trainer:
         if self.config.use_ema:
             model_ema = create_model_ema(model, cfg=self.config)
 
+        # 恢复scheduler和EMA状态（仅在继续训练时）
+        if start_epoch > 0:
+            restore_scheduler_state(scheduler, start_epoch, model_path, self.device, self.logger)
+            restore_ema_state(model_ema, model_path, self.device, self.logger)
+
         self._init_wandb(epochs=epochs, start_epoch=start_epoch, force_train=force_train)
 
         try:
@@ -701,13 +707,18 @@ class Trainer:
                     best_acc = max(train_acc, best_acc)
                     log_epoch_results(self.logger, epoch, epochs, train_loss, train_acc)
 
-                # 保存检查点
-                save_latest_model({
+                # 保存检查点（含scheduler与EMA状态，支持训练中断后正确恢复学习率调度与EMA权重）
+                checkpoint = {
                     'epoch': epoch + 1,
                     'state_dict': model.state_dict(),
                     'best_acc': best_acc,
                     'optimizer': optimizer.state_dict(),
-                }, is_best, fold=0, cfg=self.config)
+                }
+                if scheduler is not None:
+                    checkpoint['scheduler'] = scheduler.state_dict()
+                if model_ema is not None:
+                    checkpoint['model_ema'] = model_ema.state_dict()
+                save_latest_model(checkpoint, is_best, fold=0, cfg=self.config)
 
                 # 记录wandb
                 self._log_wandb_epoch(
