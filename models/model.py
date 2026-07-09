@@ -360,32 +360,36 @@ def get_convnextv2_base_384(num_classes, pretrained=True):
 
 def get_swin_transformer(num_classes, pretrained=True):
     """获取Swin Transformer模型，适用于细粒度分类任务
+
+    使用与 EVA-02 / ConvNeXt V2 相同的重试机制和缓存目录设置，
+    确保预训练权重下载失败时优雅回退到随机初始化。
+
     Args:
-        pretrained (bool): 是否使用预训练权重，默认为True
+        num_classes: 分类类别数
+        pretrained: 是否使用预训练权重，默认为True
     """
     if timm is None:
         raise ImportError("timm is required for swin_transformer model")
 
-    model = timm.create_model('swin_small_patch4_window7_224', pretrained=pretrained)
-    
-    # 冻结早期层
-    total_blocks = 4
-    blocks_to_unfreeze = 1
-    
-    for name, param in model.named_parameters():
-        # Using total_blocks and blocks_to_unfreeze to determine which layers to train
-        if f'layers.{total_blocks - blocks_to_unfreeze}' in name or 'head' in name:
-            param.requires_grad = True
-        else:
-            param.requires_grad = False
-    
-    # 替换分类头
-    feature_dim = model.head.in_features
-    model.head = nn.Sequential(
-        nn.LayerNorm(feature_dim),
-        nn.Linear(feature_dim, num_classes)
+    _ensure_pretrained_cache_dir()
+
+    model, pretrained_loaded = _create_timm_model_with_retry(
+        ["swin_small_patch4_window7_224"],
+        pretrained=pretrained,
+        num_classes=num_classes,
+        drop_path_rate=0.2,
     )
-    
+
+    # 只有成功加载预训练权重时才使用渐进式解冻
+    if pretrained_loaded:
+        _freeze_all_parameters(model)
+        # 只解冻最后一个 stage 和分类头
+        _unfreeze_matching_parameters(model, ("layers.3", "norm", "head"))
+        print("Swin Transformer model created with pretrained weights (partial freeze for fine-tuning)")
+    else:
+        _unfreeze_all_parameters(model)
+        print("Swin Transformer model created without pretrained weights (full training mode)")
+
     return model
 
 def get_hybrid_model(num_classes, pretrained=True):
