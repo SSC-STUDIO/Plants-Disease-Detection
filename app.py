@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import tempfile
 from pathlib import Path
@@ -68,8 +69,16 @@ def maybe_download_file(target_path: Path, url: str) -> None:
 def load_labels(path: Path) -> Dict[int, str]:
     if not path.exists():
         return {}
-    with path.open("r", encoding="utf-8") as f:
-        payload = json.load(f)
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            payload = json.load(f)
+    except (json.JSONDecodeError, ValueError) as exc:
+        logging.getLogger("app.load_labels").warning(
+            "Labels file %s is corrupted or empty (%s); falling back to numeric class IDs",
+            path,
+            exc,
+        )
+        return {}
 
     if isinstance(payload, dict):
         if "labels" in payload and isinstance(payload["labels"], dict):

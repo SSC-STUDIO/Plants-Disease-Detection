@@ -63,3 +63,27 @@ def test_app_load_labels_supports_release_mapping(temp_dir):
         0: "Apple___healthy",
         1: "Tomato___Late_blight",
     }
+
+
+def test_app_load_labels_returns_empty_on_corrupted_json(temp_dir):
+    labels_path = temp_dir / "bad_labels.json"
+    labels_path.write_text("{not valid json!!!", encoding="utf-8")
+
+    assert load_labels(labels_path) == {}
+
+
+def test_app_load_labels_returns_empty_on_empty_file(temp_dir):
+    labels_path = temp_dir / "empty.json"
+    labels_path.write_text("", encoding="utf-8")
+
+    assert load_labels(labels_path) == {}
+
+
+def test_app_load_labels_handles_list_format(temp_dir):
+    labels_path = temp_dir / "labels_list.json"
+    labels_path.write_text('["Apple___healthy", "Tomato___Late_blight"]', encoding="utf-8")
+
+    assert load_labels(labels_path) == {
+        0: "Apple___healthy",
+        1: "Tomato___Late_blight",
+    }
