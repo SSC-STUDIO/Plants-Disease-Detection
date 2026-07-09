@@ -66,7 +66,8 @@ class InferenceManager:
             max_dimension=self.config.safe_max_image_dimension if hasattr(self.config, 'safe_max_image_dimension') else 10000,
             max_file_size=self.config.safe_max_file_size if hasattr(self.config, 'safe_max_file_size') else 100 * 1024 * 1024
         )
-        self.integrity_verifier = ModelIntegrityVerifier() if verify_model_integrity else None
+        hash_store_path = getattr(self.config, 'model_hash_cache_path', None)
+        self.integrity_verifier = ModelIntegrityVerifier(hash_store_path=hash_store_path) if verify_model_integrity else None
 
     @staticmethod
     def _normalize_tta_views(tta_views: Optional[int], default: int) -> int:
