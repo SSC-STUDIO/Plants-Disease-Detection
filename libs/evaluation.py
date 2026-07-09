@@ -249,7 +249,15 @@ def evaluate_model(
             else:
                 probabilities = torch.nn.functional.softmax(logits, dim=1)
 
-            prec1, preck = accuracy(logits, targets_tensor, topk=(1, max(1, topk)))
+            # NOTE: accuracy must be computed from `probabilities` — the same
+            # tensor used for argmax predictions below — NOT from raw `logits`.
+            # When TTA > 1, `probabilities` is the TTA-averaged softmax output
+            # while `logits` is a single non-TTA forward pass.  Using `logits`
+            # here would make the reported top1/topk metrics inconsistent with
+            # the classification report and confusion matrix (which both derive
+            # their predictions from `probabilities`), silently hiding the
+            # accuracy gain (or loss) that TTA provides.
+            prec1, preck = accuracy(probabilities, targets_tensor, topk=(1, max(1, topk)))
             loss_meter.update(loss.item(), inputs.size(0))
             top1_meter.update(prec1.item(), inputs.size(0))
             topk_meter.update(preck.item(), inputs.size(0))
