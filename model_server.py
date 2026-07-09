@@ -49,10 +49,19 @@ def _record_auth_failure(client_ip: str) -> int:
 def _is_rate_limited(client_ip: str) -> bool:
     """Check whether the client IP has exceeded the failure threshold."""
     now = time.monotonic()
-    failures = _auth_failures[client_ip]
+    failures = _auth_failures.get(client_ip)
+    if not failures:
+        return False
     cutoff = now - RATE_LIMIT_WINDOW
     while failures and failures[0] < cutoff:
         failures.popleft()
+    # Garbage-collect: if all failures have expired, remove the IP key
+    # entirely so the dict does not grow without bound (memory leak
+    # protection — an attacker probing from many IPs could otherwise
+    # exhaust server memory with empty deques).
+    if not failures:
+        del _auth_failures[client_ip]
+        return False
     return len(failures) >= RATE_LIMIT_MAX_FAILURES
 
 
