@@ -808,6 +808,7 @@ class Trainer:
         skipped_batches = 0
         consecutive_errors = 0
         max_consecutive_errors = 50
+        total_batches_seen = 0
 
         with torch.no_grad():
             pbar = tqdm(val_loader, desc=f'Validation Epoch {epoch}')
@@ -851,11 +852,12 @@ class Trainer:
                         f"Validation epoch {epoch}, batch {iter}: {str(e)} — skipping this batch"
                     )
                     continue
+                total_batches_seen += 1
 
         if skipped_batches > 0:
             self.logger.warning(
                 f"Validation epoch {epoch} completed with {skipped_batches} skipped batches "
-                f"out of {iter + 1} total"
+                f"out of {total_batches_seen} total"
             )
 
         return val_losses.avg, val_top1.avg
