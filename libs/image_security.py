@@ -306,24 +306,31 @@ class SecureOpenCVLoader:
 
 def validate_image_safe(
     file_path: str,
-    max_size: Optional[int] = None,
-    max_dimension: Optional[int] = None
+    max_file_size: Optional[int] = None,
+    max_pixels: Optional[int] = None,
+    max_dimension: Optional[int] = None,
 ) -> bool:
     """快速验证图像文件是否安全
-    
+
+    Performs lightweight checks (file-size limits and PIL integrity
+    verification) without loading pixel data — useful as a fast pre-check
+    before a full :meth:`SecureImageLoader.load_image` call.
+
     Args:
         file_path: 图像文件路径
-        max_size: 最大文件大小
-        max_dimension: 最大边长
-        
+        max_file_size: 最大文件大小（字节）
+        max_pixels: 最大总像素数
+        max_dimension: 最大单边像素数
+
     Returns:
         是否安全
     """
     loader = SecureImageLoader(
-        max_pixels=max_size or MAX_IMAGE_PIXELS,
-        max_dimension=max_dimension or MAX_IMAGE_DIMENSION
+        max_pixels=max_pixels or MAX_IMAGE_PIXELS,
+        max_dimension=max_dimension or MAX_IMAGE_DIMENSION,
+        max_file_size=max_file_size or MAX_FILE_SIZE,
     )
-    
+
     try:
         loader.validate_file_size(file_path)
         is_valid, _ = loader.verify_image_integrity(file_path)

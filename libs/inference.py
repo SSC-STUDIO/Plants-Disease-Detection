@@ -20,7 +20,6 @@ from libs.image_security import (
     ImageSecurityError, 
     ImageTooLargeError,
     secure_load_image,
-    validate_image_safe
 )
 from libs.model_integrity import (
     ModelIntegrityVerifier,
@@ -219,12 +218,16 @@ class InferenceManager:
         if not os.path.isfile(image_path):
             raise ValueError(f"Image path is not a file: {image_path}")
             
-        # SECURITY FIX: Quick security check for image file
-        if not validate_image_safe(image_path):
-            self.logger.warning(f"Image {image_path} failed basic security validation")
-            if self.strict_image_validation:
-                raise ImageSecurityError(f"Image failed security validation: {image_path}")
-        
+        # SECURITY FIX: Strict image validation is handled entirely by the
+        # SecureImageLoader.load_image() call below — it performs file-size,
+        # format, integrity, dimension and pixel-count checks using the
+        # config-level limits already configured on self.secure_image_loader.
+        # The previous bare validate_image_safe() call here created a *second*
+        # loader with different (module-global) limits and re-did work that
+        # load_image() repeats moments later, so it was both redundant and
+        # inconsistent.  Removing it eliminates the double cost without losing
+        # any security guarantees.
+
         # Prepare image transforms
         transform = build_transforms(train=False, test=True, cfg=self.config)
         
