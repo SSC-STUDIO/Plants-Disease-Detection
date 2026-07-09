@@ -16,6 +16,8 @@ _MODEL_NAME_CANDIDATES = (
     "efficientnetv2_s",
     "convnext_small",
     "convnextv2_base_384",
+    "eva02_base",
+    "eva02_large",
     "swin_transformer",
     "hybrid_model",
     "ensemble_model",

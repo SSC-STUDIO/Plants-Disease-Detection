@@ -1273,11 +1273,6 @@ def main():
     elif args.command == "train":
         train_pipeline(args)
     elif args.command == "predict":
-        # 确保测试集合并设置正确
-        if not hasattr(args, 'merge') or not args.merge:
-            # 默认启用测试集合并
-            logger.info("Test dataset merging enabled")
-            cfg.merge_test_datasets = True
         run_inference(args, cfg=cfg)
     elif args.command == "evaluate":
         run_evaluation(args)

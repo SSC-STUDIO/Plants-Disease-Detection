@@ -31,3 +31,12 @@ class TestInferModelNameFromPath:
     def test_no_directory_segment_returns_none(self):
         # The candidate must appear as a directory segment, not a bare filename.
         assert infer_model_name_from_path("convnext_small.pth.tar") is None
+
+    def test_eva02_base_detected(self):
+        path = "checkpoints/best/eva02_base/0/best_model.pth.tar"
+        assert infer_model_name_from_path(path) == "eva02_base"
+
+    def test_eva02_large_alias_detected(self):
+        path = "checkpoints/eva02_large/0/best_model.pth.tar"
+        assert infer_model_name_from_path(path) == "eva02_large"
+
