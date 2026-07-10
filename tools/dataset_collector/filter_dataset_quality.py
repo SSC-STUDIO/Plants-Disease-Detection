@@ -18,6 +18,13 @@ from typing import Any, DefaultDict, Dict, Iterable, List, Optional, Sequence, T
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 
+def _get_flat_data(img: Image.Image) -> list:
+    """Compatibility wrapper: use get_flattened_data (Pillow >=12.2) or fall back to getdata."""
+    if hasattr(img, "get_flattened_data"):
+        return list(img.get_flattened_data())
+    return list(img.getdata())
+
+
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 DEFAULT_COMPANION_FILES = ("labels.json", "provenance.json")
 
@@ -212,7 +219,7 @@ def image_entropy(gray: Image.Image) -> float:
 
 def average_hash(gray: Image.Image) -> int:
     small = gray.resize((8, 8), Image.Resampling.LANCZOS)
-    values = list(small.getdata())
+    values = _get_flat_data(small)
     mean = sum(values) / len(values)
     result = 0
     for value in values:
@@ -228,7 +235,7 @@ def analyze_image(path: Path) -> ImageMetrics:
         metrics.width, metrics.height = image.size
         gray = ImageOps.grayscale(image)
         small = gray.resize((64, 64), Image.Resampling.LANCZOS)
-        values = list(small.getdata())
+        values = _get_flat_data(small)
         mean = sum(values) / len(values)
         variance = sum((value - mean) ** 2 for value in values) / len(values)
         metrics.stddev = math.sqrt(variance)
