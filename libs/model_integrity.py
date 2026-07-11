@@ -7,7 +7,7 @@ import json
 import hashlib
 import logging
 from pathlib import Path
-from typing import Dict, Optional, Tuple, Union, List
+from typing import Dict, Optional, Tuple, List
 from dataclasses import dataclass, asdict
 from datetime import datetime
 
@@ -78,7 +78,7 @@ class ModelIntegrityVerifier:
         """从文件加载哈希缓存"""
         if os.path.exists(self.hash_store_path):
             try:
-                with open(self.hash_store_path, 'r') as f:
+                with open(self.hash_store_path, 'r', encoding="utf-8") as f:
                     data = json.load(f)
                     for path, record_data in data.items():
                         self._hash_cache[path] = ModelHashRecord.from_dict(record_data)
@@ -95,7 +95,7 @@ class ModelIntegrityVerifier:
                 path: record.to_dict() 
                 for path, record in self._hash_cache.items()
             }
-            with open(self.hash_store_path, 'w') as f:
+            with open(self.hash_store_path, 'w', encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
         except Exception as e:
             logger.warning(f"Failed to save hash cache: {e}")
@@ -349,7 +349,7 @@ class ModelIntegrityVerifier:
             ]
         }
         
-        with open(output_path, 'w') as f:
+        with open(output_path, 'w', encoding="utf-8") as f:
             json.dump(report, f, indent=2)
         
         logger.info(f"Hash report exported to: {output_path}")

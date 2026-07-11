@@ -1,5 +1,5 @@
+import atexit
 import os
-import io
 import json
 import time
 import numpy as np
@@ -100,15 +100,16 @@ class InferenceManager:
         
     def _setup_logger(self):
         """设置并返回推理日志记录器"""
-        logging.basicConfig(
-            level=logging.INFO,
-            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-            handlers=[
-                logging.FileHandler(self.config.paths.inference_log),
-                logging.StreamHandler()
-            ]
-        )
-        return logging.getLogger('Inference')
+        os.makedirs(os.path.dirname(self.config.paths.inference_log), exist_ok=True)
+        _file_handler = logging.FileHandler(self.config.paths.inference_log, encoding="utf-8")
+        _file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+        _file_handler.setLevel(logging.INFO)
+        _logger = logging.getLogger('Inference')
+        _logger.setLevel(logging.INFO)
+        _logger.addHandler(_file_handler)
+        _logger.propagate = False
+        atexit.register(_file_handler.close)
+        return _logger
     
     def _get_device(self, device_str: Optional[str] = None) -> torch.device:
         """获取适合推理的设备
@@ -486,12 +487,12 @@ class InferenceDataset(Dataset):
             image = self.transforms(image)
             return image, img_path, False
         except ImageSecurityError as e:
-            logging.error(f"Image security error {img_path}: {str(e)}")
+            logging.getLogger('Inference').error(f"Image security error {img_path}: {str(e)}")
             # Return empty tensor with load_failed=True so predict_batch can
             # mark these results instead of silently generating fake predictions.
             return torch.zeros((3, self.config.img_height, self.config.img_width)), img_path, True
         except Exception as e:
-            logging.error(f"Error loading image {img_path}: {str(e)}")
+            logging.getLogger('Inference').error(f"Error loading image {img_path}: {str(e)}")
             return torch.zeros((3, self.config.img_height, self.config.img_width)), img_path, True
 
 def predict(

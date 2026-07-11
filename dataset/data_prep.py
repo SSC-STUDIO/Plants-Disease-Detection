@@ -1,3 +1,5 @@
+import atexit
+import gc
 import concurrent.futures
 import json
 import shutil
@@ -5,6 +7,7 @@ import os
 import sys
 import zipfile
 import tarfile
+import tempfile
 import glob
 from tqdm import tqdm
 import logging
@@ -13,7 +16,7 @@ import cv2
 from PIL import Image
 from skimage.util import random_noise
 from skimage import exposure
-from typing import List, Optional, Tuple, Union, Dict, Any
+from typing import List, Optional, Dict, Any
 
 # 添加项目路径以导入安全模块
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -22,7 +25,7 @@ if project_root not in sys.path:
 
 from config import config, paths
 from utils.utils import get_image_glob_patterns, get_image_extensions
-from utils.path_security import PathValidator, PathSecurityError, safe_makedirs
+from utils.path_security import PathValidator, safe_makedirs
 import random
 from concurrent.futures import ThreadPoolExecutor
 import traceback
@@ -40,36 +43,18 @@ try:
 except ImportError:
     A = None
 
-# 设置日志
+# 设置日志 — manual setup to avoid orphaned FileHandlers from repeated basicConfig
 os.makedirs(os.path.dirname(paths.data_proc_log), exist_ok=True)
-
-# 删除root logger的已有处理器以避免重复
-root_logger = logging.getLogger()
-for handler in root_logger.handlers[:]:
-    if isinstance(handler, logging.FileHandler) and handler.baseFilename.endswith('data_processing.log'):
-        root_logger.removeHandler(handler)
-
-# 设置基本日志配置
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler(paths.data_proc_log, encoding="utf-8", mode="a"),
-        logging.StreamHandler()
-    ]
-)
+_file_handler = logging.FileHandler(paths.data_proc_log, encoding="utf-8", mode="a")
+_file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+_file_handler.setLevel(logging.INFO)
 
 # 获取数据准备日志记录器
 logger = logging.getLogger('DataPreparation')
-
-# 确保日志记录器级别正确设置
 logger.setLevel(logging.INFO)
-
-# 确保处理器的编码和级别正确
-for handler in logger.handlers:
-    if isinstance(handler, logging.FileHandler):
-        handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
-        handler.setLevel(logging.INFO)
+logger.addHandler(_file_handler)
+logger.propagate = False
+atexit.register(_file_handler.close)
 
 # 添加路径规范化辅助函数
 def normalize_path(path):
@@ -355,7 +340,7 @@ class DataPreparation:
                             mode=0o755, allowed_base=base_dir)
             
             # 临时目录 - SECURITY FIX: 使用 tempfile 模块并设置权限
-            import tempfile
+
             if not hasattr(self.paths, 'temp_images_dir') or not self.paths.temp_images_dir:
                 self.paths.temp_images_dir = tempfile.mkdtemp(prefix='plants_temp_img_')
                 os.chmod(self.paths.temp_images_dir, 0o700)
@@ -1474,6 +1459,8 @@ class DataPreparation:
                     logger.error(f"Error saving flipped images for {image_path}: {str(e)}")
             
             # 强制清理内存
+            if pil_img is not None:
+                pil_img.close()
             pil_img = None
             cv_image = None
             
@@ -1591,7 +1578,7 @@ class DataPreparation:
             logger.info(f"Processed {total_processed}/{len(image_files)} images, created {len(batch_results)} augmented images in this batch")
             
             # 强制进行垃圾回收
-            import gc
+
             gc.collect()
             
             if hasattr(torch, 'cuda') and torch.cuda.is_available():
@@ -1672,8 +1659,10 @@ class DataPreparation:
             ):
                 return
                 
-            file_train = json.load(open(train_json, "r", encoding="utf-8"))
-            file_val = json.load(open(val_json, "r", encoding="utf-8"))
+            with open(train_json, "r", encoding="utf-8") as f:
+                file_train = json.load(f)
+            with open(val_json, "r", encoding="utf-8") as f:
+                file_val = json.load(f)
             file_list = file_train + file_val
         except FileNotFoundError as e:
             logger.error(f"Annotation files not found: {str(e)}")

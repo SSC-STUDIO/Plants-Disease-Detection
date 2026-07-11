@@ -6,8 +6,8 @@ Extracted from training.py to reduce function complexity
 import torch
 import numpy as np
 import gc
-from timeit import default_timer as timer
-from torch.cuda.amp import autocast
+from torch.amp import autocast
+from utils.utils import mixup_criterion
 
 
 def validate_batch(batch, iter, log, device):
@@ -93,10 +93,9 @@ def forward_backward_amp(model, input_tensor, target, target_a, target_b, lam,
     Returns:
         (loss, output) tuple
     """
-    with autocast():
+    with autocast(device_type='cuda'):
         output = model(input_tensor)
         if use_mixup:
-            from utils.utils import mixup_criterion
             loss = mixup_criterion(criterion, output, target_a, target_b, lam)
         else:
             loss = criterion(output, target)
@@ -138,7 +137,6 @@ def forward_backward_standard(model, input_tensor, target, target_a, target_b, l
     output = model(input_tensor)
     
     if use_mixup:
-        from utils.utils import mixup_criterion
         loss = mixup_criterion(criterion, output, target_a, target_b, lam)
     else:
         loss = criterion(output, target)

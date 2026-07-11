@@ -3,7 +3,6 @@ import torchvision
 import torch.nn.functional as F 
 from torch import nn
 import os
-import ssl
 
 try:
     import timm

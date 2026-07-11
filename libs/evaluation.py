@@ -20,15 +20,31 @@ from utils.utils import AverageMeter, accuracy, get_loss_function, handle_datase
 
 def _setup_logger(cfg: Optional[DefaultConfigs] = None) -> logging.Logger:
     cfg = cfg or config
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.FileHandler(os.path.join(cfg.paths.log_dir, "evaluation.log"), encoding="utf-8"),
-            logging.StreamHandler()
-        ]
-    )
+    os.makedirs(cfg.paths.log_dir, exist_ok=True)
+
     logger = logging.getLogger("Evaluation")
+
+    # Remove existing handlers to prevent duplicates on repeated calls.
+    for handler in logger.handlers[:]:
+        logger.removeHandler(handler)
+
+    # Manual setup avoids orphaned root-logger handlers from basicConfig.
+    file_handler = logging.FileHandler(
+        os.path.join(cfg.paths.log_dir, "evaluation.log"), encoding="utf-8"
+    )
+    file_handler.setLevel(logging.INFO)
+    file_handler.setFormatter(
+        logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+    )
+
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    console_handler.setFormatter(
+        logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+    )
+
+    logger.addHandler(file_handler)
+    logger.addHandler(console_handler)
     logger.setLevel(logging.INFO)
     return logger
 

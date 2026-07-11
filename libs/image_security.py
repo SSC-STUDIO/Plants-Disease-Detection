@@ -5,7 +5,7 @@
 import os
 import io
 import logging
-from typing import Optional, Tuple, Union
+from typing import Optional, Tuple
 from PIL import Image
 import numpy as np
 

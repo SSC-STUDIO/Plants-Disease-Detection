@@ -1,3 +1,4 @@
+import atexit
 import os
 import random
 import importlib
@@ -13,9 +14,8 @@ from timeit import default_timer as timer
 from models.model import *
 from utils.utils import *
 from tqdm import tqdm
-from torch.cuda.amp import autocast, GradScaler
+from torch.amp import GradScaler
 from typing import Dict, Optional, Any
-from utils.utils import ModelEmaV2
 from libs.training_helpers import (
     validate_batch, apply_augmentation,
     forward_backward_amp, forward_backward_standard,
@@ -57,14 +57,7 @@ class Trainer:
     def _setup_logger(self):
         """设置并返回训练日志记录器"""
         log_path = self.config.paths.training_log
-        logging.basicConfig(
-            level=logging.INFO,
-            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-            handlers=[
-                logging.FileHandler(log_path, encoding="utf-8"),
-                logging.StreamHandler()
-            ]
-        )
+        os.makedirs(os.path.dirname(log_path), exist_ok=True)
         
         # 确保训练日志记录器正确设置
         logger = logging.getLogger('Training')
@@ -73,7 +66,7 @@ class Trainer:
         for handler in logger.handlers[:]:
             logger.removeHandler(handler)
             
-        # 添加新的handler
+        # 添加新的handler — manual setup to avoid orphaned FileHandlers from repeated basicConfig
         file_handler = logging.FileHandler(log_path, encoding="utf-8")
         file_handler.setLevel(logging.INFO)
         file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
@@ -93,6 +86,9 @@ class Trainer:
             logger.setLevel(logging.DEBUG)
         else:
             logger.setLevel(logging.INFO)
+        
+        # Close FileHandlers at process exit to avoid ResourceWarning
+        atexit.register(file_handler.close)
         
         return logger
         
@@ -229,7 +225,6 @@ class Trainer:
         consecutive_errors = 0
         max_errors = 50
         
-        import gc
         cleanup_memory(self.device)
         
         for iter, batch in enumerate(progress_bar):
@@ -657,7 +652,7 @@ class Trainer:
         # 设置混合精度训练
         scaler = None
         if self.config.use_amp and self.device.type == 'cuda':
-            scaler = GradScaler()
+            scaler = GradScaler(device='cuda')
             
         # 创建EMA模型
         model_ema = None

@@ -1,5 +1,7 @@
 # Plants Disease Detection
 
+> **Archived educational project.** This repository is retained as a reproducible plant-disease classification and dataset-tooling reference. It is no longer under continuous autonomous development and should not be treated as a maintained production diagnosis service.
+
 Open plant disease image-classification toolkit built with PyTorch. The project focuses on reproducible training, clear dataset provenance, and education-friendly workflows for learning applied computer vision in agriculture.
 
 ## Try It First

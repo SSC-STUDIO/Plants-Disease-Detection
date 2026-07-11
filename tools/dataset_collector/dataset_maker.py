@@ -1,6 +1,7 @@
 import os
 import glob
 import json
+import re
 import shutil
 import logging
 import random
@@ -12,6 +13,7 @@ import time
 import io
 import concurrent.futures
 import math
+import traceback
 from PIL import Image, ImageStat
 import ssl
 import urllib.request
@@ -292,7 +294,6 @@ class DatasetMaker:
             
         except Exception as e:
             logger.error(f"生成数据集时出错: {str(e)}")
-            import traceback
             logger.error(traceback.format_exc())
             return False
     
@@ -473,7 +474,6 @@ class DatasetMaker:
             
         except Exception as e:
             logger.error(f"从网络收集数据时出错: {str(e)}")
-            import traceback
             logger.error(traceback.format_exc())
             return False
 
@@ -601,11 +601,7 @@ class DatasetMaker:
             from selenium.webdriver.chrome.options import Options
             from selenium.webdriver.chrome.service import Service
             from webdriver_manager.chrome import ChromeDriverManager
-            import time
-            import urllib.request
-            import urllib.parse
-            from PIL import Image
-            import os
+
             
             # 设置Chrome选项
             options = Options()
@@ -682,7 +678,8 @@ class DatasetMaker:
                         
                         # 验证图片数据是否有效
                         try:
-                            img = Image.open(io.BytesIO(img_data))
+                            with Image.open(io.BytesIO(img_data)) as img:
+                                pass  # validation only — ensure image data is valid
                             
                             # 保存图片
                             with open(file_path, 'wb') as f:
@@ -708,7 +705,6 @@ class DatasetMaker:
                 
         except Exception as e:
             logger.error(f"从Google收集图像时出错: {str(e)}")
-            import traceback
             logger.error(traceback.format_exc())
         
         logger.info(f"从Google收集到 {len(collected_files)} 张图片")
@@ -732,12 +728,8 @@ class DatasetMaker:
         
         try:
             # 使用Bing图片搜索
-            import urllib.request
-            import urllib.parse
-            import json
-            from PIL import Image
             
-            # 构建Bing图片搜索URL (不需要API密钥的方法)
+            # 构建Bing图片搜索URL (不需要API密钥的方法)**
             encoded_query = urllib.parse.quote(search_term)
             url = f"https://www.bing.com/images/search?q={encoded_query}&form=HDRSC2&first=1"
             
@@ -757,9 +749,8 @@ class DatasetMaker:
             from selenium.webdriver.chrome.options import Options
             from selenium.webdriver.chrome.service import Service
             from webdriver_manager.chrome import ChromeDriverManager
-            import time
+
             import re
-            import os
             
             # 设置Chrome选项
             options = Options()
@@ -832,7 +823,8 @@ class DatasetMaker:
                         
                         # 验证图片数据是否有效
                         try:
-                            img = Image.open(io.BytesIO(img_data))
+                            with Image.open(io.BytesIO(img_data)) as img:
+                                pass  # validation only — ensure image data is valid
                             
                             # 保存图片
                             with open(file_path, 'wb') as f:
@@ -855,7 +847,6 @@ class DatasetMaker:
                 
         except Exception as e:
             logger.error(f"从Bing收集图像时出错: {str(e)}")
-            import traceback
             logger.error(traceback.format_exc())
         
         logger.info(f"从Bing收集到 {len(collected_files)} 张图片")
@@ -886,16 +877,15 @@ class DatasetMaker:
                     
                     # 验证图片数据是否有效
                     try:
-                        img = Image.open(io.BytesIO(img_data))
-                        
-                        # 检查图片尺寸是否合理
-                        if img.width < 50 or img.height < 50:
-                            logger.warning(f"图片太小，跳过: {img.width}x{img.height}")
-                            return False
-                        
-                        # 保存图片
-                        with open(file_path, 'wb') as f:
-                            f.write(img_data)
+                        with Image.open(io.BytesIO(img_data)) as img:
+                            # 检查图片尺寸是否合理
+                            if img.width < 50 or img.height < 50:
+                                logger.warning(f"图片太小，跳过: {img.width}x{img.height}")
+                                return False
+                            
+                            # 保存图片
+                            with open(file_path, 'wb') as f:
+                                f.write(img_data)
                         return True
                         
                     except Exception as e:
@@ -955,12 +945,8 @@ class DatasetMaker:
             from selenium.webdriver.chrome.options import Options
             from selenium.webdriver.chrome.service import Service
             from webdriver_manager.chrome import ChromeDriverManager
-            import time
-            import urllib.request
-            import urllib.parse
-            from PIL import Image
+
             import re
-            import os
             
             # 设置Chrome选项
             options = Options()
@@ -1041,7 +1027,6 @@ class DatasetMaker:
             driver.quit()
             
             # 限制URL数量并打乱顺序
-            import random
             random.shuffle(img_urls)
             img_urls = img_urls[:min(count, len(img_urls))]
             
@@ -1078,7 +1063,6 @@ class DatasetMaker:
             
         except Exception as e:
             logger.error(f"从百度收集图像时出错: {str(e)}")
-            import traceback
             logger.error(traceback.format_exc())
         
         logger.info(f"从百度收集到 {len(collected_files)} 张图片")
@@ -1102,10 +1086,6 @@ class DatasetMaker:
         
         try:
             import flickrapi
-            import urllib.request
-            from PIL import Image
-            import time
-            import os
             from dotenv import load_dotenv
             
             # 加载环境变量（若存在）
@@ -1123,7 +1103,7 @@ class DatasetMaker:
                 # 创建dotenv文件模板
                 env_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')
                 if not os.path.exists(env_file):
-                    with open(env_file, 'w') as f:
+                    with open(env_file, 'w', encoding="utf-8") as f:
                         f.write("# Flickr API 设置\n")
                         f.write("FLICKR_API_KEY=your_api_key_here\n")
                         f.write("FLICKR_API_SECRET=your_api_secret_here\n")
@@ -1181,7 +1161,8 @@ class DatasetMaker:
                     
                     # 验证图片是否有效
                     try:
-                        img = Image.open(file_path)
+                        with Image.open(file_path) as img:
+                            pass  # validation only — ensure file is a valid image
                         # 添加到收集列表
                         collected_files.append(file_path)
                     except Exception as e:
@@ -1202,7 +1183,6 @@ class DatasetMaker:
                 
         except Exception as e:
             logger.error(f"从Flickr收集图像时出错: {str(e)}")
-            import traceback
             logger.error(traceback.format_exc())
         
         logger.info(f"从Flickr收集到 {len(collected_files)} 张图片")
@@ -1227,11 +1207,6 @@ class DatasetMaker:
             from selenium.webdriver.chrome.options import Options
             from selenium.webdriver.chrome.service import Service
             from webdriver_manager.chrome import ChromeDriverManager
-            import urllib.request
-            import urllib.parse
-            import time
-            from PIL import Image
-            import os
             
             # 设置Chrome选项
             options = Options()
@@ -1315,7 +1290,8 @@ class DatasetMaker:
                         
                         # 验证图片数据是否有效
                         try:
-                            img = Image.open(io.BytesIO(img_data))
+                            with Image.open(io.BytesIO(img_data)) as img:
+                                pass  # validation only — ensure image data is valid
                             
                             # 保存图片
                             with open(file_path, 'wb') as f:
@@ -1338,7 +1314,6 @@ class DatasetMaker:
                     
         except Exception as e:
             logger.error(f"从Flickr网站爬取图像时出错: {str(e)}")
-            import traceback
             logger.error(traceback.format_exc())
             
         return collected_files
@@ -1368,7 +1343,7 @@ class DatasetMaker:
             for i in range(min(count, 20)):  # 限制数量以避免长时间等待
                 file_path = os.path.join(output_dir, f"custom_{i:03d}.jpg")
                 # 创建空文件作为占位符
-                with open(file_path, 'w') as f:
+                with open(file_path, 'w', encoding="utf-8") as f:
                     f.write('')
                 collected_files.append(file_path)
                 

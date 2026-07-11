@@ -3,6 +3,7 @@
 
 import argparse
 import hashlib
+import logging
 import json
 import os
 import subprocess
@@ -16,6 +17,8 @@ from PIL import Image, UnidentifiedImageError
 
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+
+logger = logging.getLogger(__name__)
 
 
 def repo_root() -> Path:
@@ -288,12 +291,24 @@ def ensure_junction(link_path: Path, target_path: Path):
     if link_path.exists():
         return
     link_path.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(
-        ["cmd", "/c", "mklink", "/J", str(link_path), str(target_path)],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    try:
+        subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(link_path), str(target_path)],
+            check=True,
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+        )
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(
+            f"Failed to create junction {link_path} -> {target_path}: "
+            f"mklink exited with code {e.returncode}, stderr: {e.stderr.strip()}"
+        ) from e
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError(
+            f"Timed out creating junction {link_path} -> {target_path} after 30s"
+        ) from e
 
 
 def bytes_to_gb(num_bytes: int) -> float:

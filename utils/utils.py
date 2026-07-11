@@ -1,3 +1,4 @@
+import atexit
 import copy
 import torch
 import sys
@@ -28,16 +29,18 @@ try:
 except ImportError:
     TimmModelEmaV2 = None
 
-# 设置日志
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler(paths.utils_log),
-        logging.StreamHandler()
-    ]
-)
+# 设置日志 — manual setup to avoid orphaned FileHandlers from repeated basicConfig
+_log_dir = os.path.dirname(paths.utils_log)
+if _log_dir:
+    os.makedirs(_log_dir, exist_ok=True)
+_file_handler = logging.FileHandler(paths.utils_log, encoding="utf-8")
+_file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+_file_handler.setLevel(logging.INFO)
 logger = logging.getLogger('Utils')
+logger.setLevel(logging.INFO)
+logger.addHandler(_file_handler)
+logger.propagate = False
+atexit.register(_file_handler.close)
 
 # 忽略特定警告
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -367,16 +370,17 @@ def build_transforms(
     ])
 
 def get_optimizer(model: nn.Module, name: str = 'adamw', cfg: Optional[DefaultConfigs] = None):
-    """获取优化器
-    
-    参数:
-        model: 模型
-        name: 优化器名称
-    
-    返回:
-        优化器实例
-    """
+    """获取优化器"""
     cfg = cfg or config
+
+    # Optional dependency: torch_optimizer for Ranger/Lookahead
+    torch_opt = None
+    try:
+        import torch_optimizer as _to
+        torch_opt = _to
+    except ImportError:
+        pass
+
     if name == 'adam':
         optimizer = torch.optim.Adam(
             model.parameters(), 
@@ -398,19 +402,18 @@ def get_optimizer(model: nn.Module, name: str = 'adamw', cfg: Optional[DefaultCo
         )
     elif name == 'ranger':
         # Ranger优化器 - 使用 torch_optimizer 库中的实现
-        try:
-            import torch_optimizer as to
-            optimizer = to.Ranger(
-                model.parameters(), 
-                lr=cfg.lr, 
+        if torch_opt is not None:
+            optimizer = torch_opt.Ranger(
+                model.parameters(),
+                lr=cfg.lr,
                 weight_decay=cfg.weight_decay
             )
             logger.info("Using torch_optimizer.Ranger (RAdam + Lookahead)")
-        except ImportError:
+        else:
             logger.warning("torch_optimizer not available, falling back to AdamW")
             optimizer = torch.optim.AdamW(
-                model.parameters(), 
-                lr=cfg.lr, 
+                model.parameters(),
+                lr=cfg.lr,
                 weight_decay=cfg.weight_decay
             )
     else:
@@ -418,12 +421,9 @@ def get_optimizer(model: nn.Module, name: str = 'adamw', cfg: Optional[DefaultCo
     
     # 如果使用Lookahead，包装优化器
     if cfg.use_lookahead and name != 'ranger':
-        try:
-            import torch_optimizer as to
-            optimizer = to.Lookahead(optimizer, k=5, alpha=0.5)
+        if torch_opt is not None:
+            optimizer = torch_opt.Lookahead(optimizer, k=5, alpha=0.5)
             logger.info("Applied Lookahead wrapper to optimizer (via torch_optimizer)")
-        except ImportError:
-            logger.warning("torch_optimizer.Lookahead not available")
     
     return optimizer
 
@@ -630,7 +630,7 @@ class Logger:
         # 确保logs目录存在
         os.makedirs(log_dir, exist_ok=True)
         
-        self.file = open(file_path, mode) if mode else open(file_path, 'w')
+        self.file = open(file_path, mode, encoding="utf-8") if mode else open(file_path, 'w', encoding="utf-8")
 
     def write(self, message: str, is_terminal: bool = 1, is_file: bool = 1):
         """写入日志消息

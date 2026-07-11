@@ -4,29 +4,22 @@ import pandas as pd
 import torch 
 import os
 import logging
-from itertools import chain 
 from glob import glob
 from tqdm import tqdm
 from torch.utils.data import Dataset
 from config import config, paths
 from PIL import Image 
 from concurrent.futures import ThreadPoolExecutor
-from utils.utils import handle_datasets, build_transforms, get_image_glob_patterns, get_image_extensions
+from utils.utils import build_transforms, get_image_glob_patterns, get_image_extensions
 import concurrent.futures
 
 # SECURITY FIX: Import security modules
 from libs.image_security import (
     SecureImageLoader,
-    ImageSecurityError,
-    ImageTooLargeError,
-    ImageValidationError,
-    secure_load_image
+    ImageSecurityError
 )
 from libs.data_validation import (
-    DataSanitizer,
-    DataValidationResult,
-    SecureDatasetLoader,
-    validate_data_path
+    DataSanitizer
 )
 
 # 最大图像尺寸限制 (100MP, 约400MB内存)
@@ -289,8 +282,7 @@ class PlantDiseaseDataset(Dataset):
         
         # 对于极大的数据集，进行采样以减少内存压力
         if self.enable_sampling and len(valid_imgs) > self.sampling_threshold:
-            print(f"\nThe dataset is very large ({len(valid_imgs)} effective images), Conduct sampling to reduce memory usage")
-            import random
+            print(f"\\nThe dataset is very large ({len(valid_imgs)} effective images), Conduct sampling to reduce memory usage")
             random.seed(self.seed)  # 保持一致性
             valid_imgs = random.sample(valid_imgs, self.sample_size)
             print(f"The size of the sampled dataset: {len(valid_imgs)} images")
